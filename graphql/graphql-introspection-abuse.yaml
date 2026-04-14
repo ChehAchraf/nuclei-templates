@@ -1,0 +1,155 @@
+id: graphql-introspection-and-abuse
+
+info:
+  name: GraphQL Introspection & Attack Surface Detection
+  author: achraf-chehboun
+  severity: medium
+  description: |
+    Detects GraphQL endpoints with enabled introspection, extracts full schema including
+    types, queries, mutations, and subscriptions. Identifies dangerous patterns like
+    exposed mutation operations, debug/admin queries, batch query support (DoS vector),
+    and missing depth/complexity limits. Tests multiple common GraphQL endpoint paths
+    and POST/GET methods.
+  reference:
+    - https://graphql.org/learn/introspection/
+    - https://cheatsheetseries.owasp.org/cheatsheets/GraphQL_Cheat_Sheet.html
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    cvss-score: 5.3
+    cwe-id: CWE-200
+  metadata:
+    max-request: 10
+  tags: graphql,introspection,api,schema-leak,detection-only
+
+http:
+  # Test 1: Full introspection query via POST
+  - raw:
+      - |
+        POST /graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"query":"query IntrospectionQuery { __schema { queryType { name } mutationType { name } subscriptionType { name } types { name kind description fields(includeDeprecated: true) { name description args { name description type { name kind ofType { name kind } } } type { name kind ofType { name kind ofType { name kind } } } } } directives { name description locations args { name description type { name kind ofType { name kind } } } } } }"}
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: introspection-enabled
+        dsl:
+          - 'contains(body, "__schema") && contains(body, "queryType") && !contains(body, "introspection")'
+          - 'contains(content_type, "json")'
+        condition: and
+
+    extractors:
+      - type: regex
+        name: query-type-name
+        group: 1
+        regex:
+          - '"queryType"\s*:\s*\{\s*"name"\s*:\s*"([^"]+)"'
+      - type: regex
+        name: mutation-type-name
+        group: 1
+        regex:
+          - '"mutationType"\s*:\s*\{\s*"name"\s*:\s*"([^"]+)"'
+      - type: regex
+        name: all-type-names
+        group: 1
+        regex:
+          - '"name"\s*:\s*"(?!__)((?:User|Admin|Order|Payment|Token|Session|Account|Role|Permission|Secret|Config|Internal)[A-Za-z]*)"'
+
+  # Test 2: Alternate endpoints discovery
+  - raw:
+      - |
+        POST /api/graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+
+        {"query":"{__typename}"}
+      - |
+        POST /v1/graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+
+        {"query":"{__typename}"}
+      - |
+        POST /graphql/v1 HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+
+        {"query":"{__typename}"}
+      - |
+        POST /query HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+
+        {"query":"{__typename}"}
+      - |
+        POST /gql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+
+        {"query":"{__typename}"}
+
+    stop-at-first-match: false
+    matchers:
+      - type: dsl
+        name: graphql-alternate-endpoint
+        dsl:
+          - 'status_code_1 == 200 && contains(body_1, "__typename") && contains(content_type_1, "json")'
+          - 'status_code_2 == 200 && contains(body_2, "__typename") && contains(content_type_2, "json")'
+          - 'status_code_3 == 200 && contains(body_3, "__typename") && contains(content_type_3, "json")'
+          - 'status_code_4 == 200 && contains(body_4, "__typename") && contains(content_type_4, "json")'
+          - 'status_code_5 == 200 && contains(body_5, "__typename") && contains(content_type_5, "json")'
+        condition: or
+
+  # Test 3: GET-based introspection (bypasses POST-only restrictions)
+  - method: GET
+    path:
+      - "{{BaseURL}}/graphql?query={__schema{queryType{name}mutationType{name}types{name+kind+fields{name+type{name}}}}}"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: get-introspection-enabled
+        dsl:
+          - 'contains(body, "__schema") && contains(body, "queryType")'
+
+  # Test 4: Batch query support (potential DoS vector)
+  - raw:
+      - |
+        POST /graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+
+        [{"query":"{__typename}"},{"query":"{__typename}"},{"query":"{__typename}"}]
+
+    matchers:
+      - type: dsl
+        name: batch-queries-enabled
+        dsl:
+          - 'status_code == 200 && contains(body, "__typename") && contains(body, "[{") && len(body) > 50'
+
+  # Test 5: GraphQL IDE/Playground exposure
+  - method: GET
+    path:
+      - "{{BaseURL}}/graphiql"
+      - "{{BaseURL}}/graphql/playground"
+      - "{{BaseURL}}/graphql/console"
+      - "{{BaseURL}}/altair"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: graphql-ide-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "GraphiQL") || contains(body, "graphql-playground") || contains(body, "Altair") || contains(body, "graphql-console"))'

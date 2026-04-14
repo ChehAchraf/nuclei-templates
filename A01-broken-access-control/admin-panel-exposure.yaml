@@ -1,0 +1,99 @@
+id: admin-panel-forced-browsing-advanced
+
+info:
+  name: Admin Panel & Sensitive Endpoint Forced Browsing
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects unauthenticated access to admin panels, management consoles, and sensitive
+    endpoints through forced browsing. Covers modern frameworks and common CMS platforms
+    including custom admin paths, API documentation endpoints, database management tools,
+    and cloud service dashboards. Only detects accessible pages — does not attempt authentication.
+  reference:
+    - https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    cvss-score: 7.5
+    cwe-id: CWE-425
+  metadata:
+    max-request: 40
+  tags: owasp-top10,broken-access-control,forced-browsing,admin-panel
+
+http:
+  - method: GET
+    path:
+      # Standard admin paths
+      - "{{BaseURL}}/admin"
+      - "{{BaseURL}}/admin/"
+      - "{{BaseURL}}/administrator"
+      - "{{BaseURL}}/admin/dashboard"
+      - "{{BaseURL}}/admin/login"
+      - "{{BaseURL}}/panel"
+      - "{{BaseURL}}/dashboard"
+      - "{{BaseURL}}/manage"
+      - "{{BaseURL}}/management"
+      # Framework-specific
+      - "{{BaseURL}}/wp-admin/"
+      - "{{BaseURL}}/wp-login.php"
+      - "{{BaseURL}}/administrator/index.php"
+      - "{{BaseURL}}/admin.php"
+      - "{{BaseURL}}/user/login"
+      # API documentation endpoints (should be auth-gated in production)
+      - "{{BaseURL}}/swagger-ui.html"
+      - "{{BaseURL}}/swagger-ui/"
+      - "{{BaseURL}}/api-docs"
+      - "{{BaseURL}}/v2/api-docs"
+      - "{{BaseURL}}/v3/api-docs"
+      - "{{BaseURL}}/openapi.json"
+      - "{{BaseURL}}/redoc"
+      - "{{BaseURL}}/graphql"
+      - "{{BaseURL}}/graphiql"
+      - "{{BaseURL}}/altair"
+      - "{{BaseURL}}/playground"
+      # Database management
+      - "{{BaseURL}}/phpmyadmin/"
+      - "{{BaseURL}}/adminer.php"
+      - "{{BaseURL}}/pgadmin/"
+      - "{{BaseURL}}/_utils/"
+      # Monitoring and profiling
+      - "{{BaseURL}}/kibana"
+      - "{{BaseURL}}/grafana"
+      - "{{BaseURL}}/prometheus"
+      - "{{BaseURL}}/metrics"
+      - "{{BaseURL}}/status"
+      - "{{BaseURL}}/_profiler"
+      - "{{BaseURL}}/elmah.axd"
+      - "{{BaseURL}}/trace.axd"
+      # Cloud and infrastructure
+      - "{{BaseURL}}/console"
+      - "{{BaseURL}}/.well-known/security.txt"
+
+    stop-at-first-match: false
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        dsl:
+          - '!contains(body, "404") && !contains(body, "Not Found") && !contains(body, "Page not found")'
+          - 'len(body) > 500'
+        condition: and
+
+      - type: regex
+        regex:
+          - '(?i)(?:admin|dashboard|management|console|swagger|graphi?ql|phpMyAdmin|adminer|grafana|kibana|prometheus|login|sign.?in)'
+        part: body
+
+    extractors:
+      - type: regex
+        name: page-title
+        group: 1
+        regex:
+          - '<title[^>]*>([^<]{1,100})</title>'
+      - type: kval
+        name: auth-headers
+        kval:
+          - WWW-Authenticate
+          - X-Frame-Options

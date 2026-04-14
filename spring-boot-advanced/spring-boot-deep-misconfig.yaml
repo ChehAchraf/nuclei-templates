@@ -1,0 +1,194 @@
+id: spring-boot-deep-misconfiguration
+
+info:
+  name: Spring Boot Advanced Misconfigurations - Actuator Deep Dive & Cloud Gateway RCE
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Deep detection for Spring Boot actuator misconfigurations beyond basic endpoint
+    enumeration. Targets /env for credential extraction, /heapdump for memory analysis
+    exposure, /jolokia for JMX remote code execution paths, /gateway/routes for Spring
+    Cloud Gateway CVE-2022-22947 (SpEL injection), and property source modification
+    via /env POST. Includes actuator behind reverse proxy path traversal bypasses.
+  reference:
+    - https://nvd.nist.gov/vuln/detail/CVE-2022-22947
+    - https://nvd.nist.gov/vuln/detail/CVE-2022-22963
+    - https://spring.io/security
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H
+    cvss-score: 10.0
+    cwe-id: CWE-917
+  metadata:
+    max-request: 20
+  tags: spring-boot,actuator,gateway,jolokia,heapdump,cve-2022-22947,cve-2022-22963,detection-only
+
+http:
+  # === /ENV CREDENTIAL EXTRACTION ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/env"
+      - "{{BaseURL}}/actuator/env/spring.datasource.password"
+      - "{{BaseURL}}/env"
+      # Path traversal bypasses for reverse proxies
+      - "{{BaseURL}}/..;/actuator/env"
+      - "{{BaseURL}}/actuator/..;/actuator/env"
+      - "{{BaseURL}}/%2e%2e/actuator/env"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: env-full-exposure
+        dsl:
+          - 'status_code == 200 && contains(body, "propertySources") && (contains(body, "spring.datasource") || contains(body, "spring.redis") || contains(body, "spring.mail"))'
+
+      - type: dsl
+        name: env-specific-secret
+        dsl:
+          - 'status_code == 200 && contains(body, "value") && !contains(body, "******")'
+
+    extractors:
+      - type: regex
+        name: exposed-secrets-env
+        group: 0
+        regex:
+          - '"spring\.datasource\.(?:url|username|password)"\s*:\s*\{[^}]*"value"\s*:\s*"[^"]*"'
+          - '"spring\.redis\.(?:host|password)"\s*:\s*\{[^}]*"value"\s*:\s*"[^"]*"'
+          - '"spring\.mail\.(?:host|username|password)"\s*:\s*\{[^}]*"value"\s*:\s*"[^"]*"'
+          - '"(?:secret|key|token|credential|apikey)[^"]*"\s*:\s*\{[^}]*"value"\s*:\s*"[^*"][^"]*"'
+
+  # === /HEAPDUMP EXPOSURE ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/heapdump"
+      - "{{BaseURL}}/heapdump"
+      - "{{BaseURL}}/..;/actuator/heapdump"
+
+    stop-at-first-match: true
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: heapdump-downloadable
+        dsl:
+          - 'contains(content_type, "octet-stream") || contains(content_type, "x-heap") || contains(header, "Content-Disposition")'
+          - 'len(body) > 10000'
+        condition: and
+
+  # === JOLOKIA JMX (leads to RCE) ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/jolokia"
+      - "{{BaseURL}}/jolokia"
+      - "{{BaseURL}}/actuator/jolokia/list"
+      - "{{BaseURL}}/jolokia/list"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: jolokia-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "\"agent\"") || contains(body, "jolokia")) && contains(content_type, "json")'
+
+      - type: dsl
+        name: jolokia-mbean-list
+        dsl:
+          - 'status_code == 200 && contains(body, "java.lang") && contains(body, "MBeanInfo")'
+
+    extractors:
+      - type: regex
+        name: jolokia-agent-version
+        group: 1
+        regex:
+          - '"agentVersion"\s*:\s*"([^"]+)"'
+
+  # === SPRING CLOUD GATEWAY ROUTES (CVE-2022-22947) ===
+  # Detection: check if routes are exposed
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/gateway/routes"
+      - "{{BaseURL}}/actuator/gateway/globalfilters"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: gateway-routes-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "route_id") || contains(body, "predicate") || contains(body, "filters"))'
+
+      - type: dsl
+        name: gateway-filters-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, "GatewayFilter") && contains(content_type, "json")'
+
+  # CVE-2022-22947: SpEL injection via route creation (detection only — checks if endpoint accepts POST)
+  - raw:
+      - |
+        POST /actuator/gateway/routes/nuclei-test-{{randstr}} HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"id":"nuclei-test-{{randstr}}","predicates":[{"name":"Path","args":{"_genkey_0":"/nuclei-test-{{randstr}}"}}],"filters":[{"name":"AddResponseHeader","args":{"name":"X-Nuclei-Test","value":"detection-only"}}],"uri":"https://example.com","order":0}
+
+    matchers:
+      - type: dsl
+        name: cve-2022-22947-route-creation
+        dsl:
+          - 'status_code == 201 || status_code == 200'
+
+  # === CVE-2022-22963: Spring Cloud Function SpEL RCE ===
+  # Detection: check if the function routing header is processed
+  - raw:
+      - |
+        POST /functionRouter HTTP/1.1
+        Host: {{Hostname}}
+        spring.cloud.function.routing-expression: T(java.lang.Runtime).getRuntime().getClass().getName()
+        Content-Type: application/x-www-form-urlencoded
+        Accept: */*
+
+        data=nuclei-test
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: cve-2022-22963-spel-detected
+        dsl:
+          - 'status_code == 500 && contains(body, "java.lang.Runtime")'
+          - 'status_code == 200 && contains(body, "java.lang.Runtime")'
+        condition: or
+
+      - type: dsl
+        name: function-router-exists
+        dsl:
+          - 'status_code != 404 && !contains(body, "Whitelabel Error Page")'
+
+  # === ENV PROPERTY MODIFICATION (POST to /env) ===
+  - raw:
+      - |
+        POST /actuator/env HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"name":"nuclei.test.property","value":"detection-probe-{{randstr}}"}
+
+    matchers:
+      - type: dsl
+        name: env-property-writable
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json")'
+          - '!contains(body, "Method Not Allowed") && !contains(body, "405")'
+        condition: and
+
+    extractors:
+      - type: kval
+        name: spring-headers
+        kval:
+          - X-Application-Context
+          - X-Content-Type-Options

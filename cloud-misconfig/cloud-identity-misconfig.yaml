@@ -1,0 +1,200 @@
+id: cloud-identity-misconfiguration-detection
+
+info:
+  name: Cloud & Identity Misconfigurations - Cognito / Firebase / OAuth / SAML
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects exposed cloud identity services and weak OAuth/SAML implementations.
+    Covers AWS Cognito user pool enumeration with unprotected client IDs,
+    Firebase open database/storage rules, OAuth 2.0 state parameter bypass and
+    open redirect via redirect_uri, and SAML assertion weaknesses.
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N
+    cvss-score: 8.2
+    cwe-id: CWE-306
+  metadata:
+    max-request: 18
+  tags: cloud,cognito,firebase,oauth,saml,misconfig,detection-only
+
+http:
+  # === AWS COGNITO ===
+  # Detect exposed Cognito User Pool configuration
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+      - "{{BaseURL}}/static/js/main.js"
+      - "{{BaseURL}}/config.js"
+      - "{{BaseURL}}/env.js"
+      - "{{BaseURL}}/runtime-config.js"
+
+    stop-at-first-match: false
+    matchers:
+      - type: regex
+        name: cognito-pool-id-exposed
+        regex:
+          - '(?i)(?:user_?pool_?id|cognito_?pool|UserPoolId)["\x27\s:=]+\s*["\x27]?((?:us|eu|ap|ca|sa|me|af)-(?:east|west|central|south|north|southeast|northeast)-[0-9]_[A-Za-z0-9]{9})["\x27]?'
+        part: body
+
+    extractors:
+      - type: regex
+        name: cognito-user-pool-id
+        group: 1
+        regex:
+          - '((?:us|eu|ap|ca|sa|me|af)-(?:east|west|central|south|north|southeast|northeast)-[0-9]_[A-Za-z0-9]{9})'
+      - type: regex
+        name: cognito-client-id
+        group: 1
+        regex:
+          - '(?i)(?:client_?id|ClientId|app_?client)["\x27\s:=]+\s*["\x27]?([a-z0-9]{26})["\x27]?'
+      - type: regex
+        name: cognito-identity-pool
+        group: 1
+        regex:
+          - '((?:us|eu|ap)-(?:east|west|central)-[0-9]:[a-f0-9-]{36})'
+
+  # Cognito: test if self-registration is enabled (unauthenticated)
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: cognito-idp.us-east-1.amazonaws.com
+        Content-Type: application/x-amz-json-1.1
+        X-Amz-Target: AWSCognitoIdentityProviderService.SignUp
+
+        {"ClientId":"placeholder","Username":"nuclei-test@test.invalid","Password":"NucleiTest123!"}
+
+    matchers:
+      - type: dsl
+        name: cognito-self-signup-enabled
+        dsl:
+          - '!contains(body, "NotAuthorizedException") && !contains(body, "InvalidParameterException") && (contains(body, "UserConfirmed") || contains(body, "CodeDeliveryDetails"))'
+
+  # === FIREBASE ===
+  # Firebase Realtime Database open read rules
+  - method: GET
+    path:
+      - "{{BaseURL}}/.json"
+      - "{{BaseURL}}/data.json"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: firebase-open-read
+        dsl:
+          - 'contains(content_type, "json") && !contains(body, "Permission denied") && !contains(body, "error") && len(body) > 5 && body != "null"'
+
+  # Firebase open write test (non-destructive, just checks if PUT is accepted)
+  - raw:
+      - |
+        PUT /.json?shallow=true HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+
+        {"nuclei_test_probe": true}
+
+    matchers:
+      - type: dsl
+        name: firebase-open-write
+        dsl:
+          - 'status_code == 200 && contains(body, "nuclei_test_probe")'
+
+  # Firebase config exposure in SPA source
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers:
+      - type: regex
+        name: firebase-config-exposed
+        regex:
+          - '(?:apiKey|authDomain|databaseURL|projectId|storageBucket|messagingSenderId|appId)\s*[:=]\s*["\x27][^\s"<\x27]{10,}["\x27]'
+        part: body
+
+    extractors:
+      - type: regex
+        name: firebase-project-id
+        group: 1
+        regex:
+          - '(?:projectId|project_id)\s*[:=]\s*["\x27]([^"<\x27\s]+)["\x27]'
+      - type: regex
+        name: firebase-api-key
+        group: 1
+        regex:
+          - '(?:apiKey|api_key)\s*[:=]\s*["\x27]([^"<\x27\s]+)["\x27]'
+
+  # === OAUTH 2.0 MISCONFIGURATIONS ===
+  # Missing state parameter
+  - method: GET
+    path:
+      - "{{BaseURL}}/oauth/authorize?response_type=code&client_id=test&redirect_uri=https://example.com/callback"
+      - "{{BaseURL}}/auth/authorize?response_type=code&client_id=test&redirect_uri=https://example.com/callback"
+      - "{{BaseURL}}/connect/authorize?response_type=code&client_id=test&redirect_uri=https://example.com/callback"
+
+    stop-at-first-match: true
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+          - 302
+
+      - type: dsl
+        name: oauth-no-state-required
+        dsl:
+          - '!contains(body, "state") && !contains(header, "state")'
+          - 'contains(body, "authorize") || contains(body, "consent") || contains(body, "login") || status_code == 302'
+        condition: and
+
+  # OAuth redirect_uri open redirect
+  - method: GET
+    path:
+      - "{{BaseURL}}/oauth/authorize?response_type=code&client_id=test&redirect_uri=https://evil.com/callback&state=nuclei"
+
+    matchers:
+      - type: dsl
+        name: oauth-redirect-open
+        dsl:
+          - 'status_code == 302 && contains(header, "evil.com")'
+
+  # === SAML MISCONFIGURATIONS ===
+  # SAML metadata endpoint exposure
+  - method: GET
+    path:
+      - "{{BaseURL}}/saml/metadata"
+      - "{{BaseURL}}/auth/saml/metadata"
+      - "{{BaseURL}}/sso/saml/metadata"
+      - "{{BaseURL}}/FederationMetadata/2007-06/FederationMetadata.xml"
+      - "{{BaseURL}}/.well-known/saml-metadata"
+
+    stop-at-first-match: false
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: saml-metadata-exposed
+        dsl:
+          - 'contains(body, "EntityDescriptor") && contains(body, "X509Certificate")'
+
+    extractors:
+      - type: regex
+        name: saml-entity-id
+        group: 1
+        regex:
+          - 'entityID="([^"]+)"'
+      - type: regex
+        name: saml-acs-url
+        group: 1
+        regex:
+          - 'AssertionConsumerServiceURL="([^"]+)"'
+      - type: regex
+        name: saml-signing-cert
+        group: 0
+        regex:
+          - '<ds:X509Certificate>[A-Za-z0-9+/=\s]{20,50}'

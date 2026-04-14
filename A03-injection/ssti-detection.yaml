@@ -1,0 +1,171 @@
+id: ssti-multi-engine-detection
+
+info:
+  name: Server-Side Template Injection - Multi-Engine Detection
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects Server-Side Template Injection (SSTI) across multiple template engines
+    including Jinja2 (Python/Flask), Twig (PHP/Symfony), Freemarker (Java), Thymeleaf
+    (Java/Spring), Pebble (Java), Mako (Python), ERB (Ruby), Handlebars (Node.js),
+    and Pug/Jade (Node.js). Uses mathematical expression evaluation as a safe, non-destructive
+    confirmation technique — no command execution or file access is attempted.
+  reference:
+    - https://owasp.org/Top10/A03_2021-Injection/
+    - https://portswigger.net/web-security/server-side-template-injection
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-1336
+  metadata:
+    max-request: 10
+  tags: owasp-top10,injection,ssti,template-injection,detection-only
+
+variables:
+  result_49: "49"
+  result_7777777: "7777777"
+  result_777777: "777777"
+
+http:
+  # Test 1: Jinja2/Twig — {{7*7}} should render as 49
+  - raw:
+      - |
+        GET /?name={{7*7}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q={{7*7}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?template={{7*7}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: jinja2-twig-confirmed
+        dsl:
+          - 'contains(body_1, "49") && !contains(body_1, "{{7*7}}")'
+          - 'contains(body_2, "49") && !contains(body_2, "{{7*7}}")'
+          - 'contains(body_3, "49") && !contains(body_3, "{{7*7}}")'
+        condition: or
+
+  # Test 2: Jinja2 specific — {{7*'7'}} renders as 7777777 in Jinja2 but 49 in Twig
+  - raw:
+      - |
+        GET /?name={{7*'7'}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: jinja2-string-multiply
+        dsl:
+          - 'contains(body, "7777777")'
+
+      - type: dsl
+        name: twig-arithmetic
+        dsl:
+          - 'contains(body, "49") && !contains(body, "7777777")'
+
+  # Test 3: Freemarker (Java) — ${7*7}
+  - raw:
+      - |
+        GET /?name=${7*7} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: freemarker-confirmed
+        dsl:
+          - 'contains(body, "49") && !contains(body, "${7*7}")'
+
+  # Test 4: Thymeleaf (Spring) — expression evaluation
+  - raw:
+      - |
+        GET /?name=__${7*7}__::x HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: thymeleaf-confirmed
+        dsl:
+          - 'contains(body, "49")'
+
+  # Test 5: ERB (Ruby) — <%= 7*7 %>
+  - raw:
+      - |
+        GET /?name=<%25%3d+7*7+%25> HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: erb-confirmed
+        dsl:
+          - 'contains(body, "49") && !contains(body, "<%")'
+
+  # Test 6: Pug/Jade (Node.js) — #{7*7}
+  - raw:
+      - |
+        GET /?name=#{7*7} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: pug-jade-confirmed
+        dsl:
+          - 'contains(body, "49") && !contains(body, "#{7*7}")'
+
+  # Test 7: Mako (Python) — ${7*7}
+  - raw:
+      - |
+        GET /?name=${7*7} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: mako-confirmed
+        dsl:
+          - 'contains(body, "49") && !contains(body, "${7*7}")'
+
+  # Test 8: Smarty (PHP) — {7*7}
+  - raw:
+      - |
+        GET /?name={7*7} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: smarty-confirmed
+        dsl:
+          - 'contains(body, "49") && !contains(body, "{7*7}")'
+
+  # Test 9: Expression Language (Java EE) — ${7*7}
+  - raw:
+      - |
+        GET /?name=%24%7B7*7%7D HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: el-injection-confirmed
+        dsl:
+          - 'contains(body, "49")'
+
+    extractors:
+      - type: regex
+        name: template-engine-error
+        group: 0
+        regex:
+          - '(?i)((?:jinja2|twig|freemarker|thymeleaf|mako|pug|jade|smarty|handlebars|mustache|erb|velocity|pebble)[\w\s.]*(?:error|exception|template)[^<\n]{0,200})'

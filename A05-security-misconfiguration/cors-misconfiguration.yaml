@@ -1,0 +1,136 @@
+id: cors-misconfiguration-advanced
+
+info:
+  name: CORS Misconfiguration - Advanced Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects dangerous CORS misconfigurations including reflected origins, null origin acceptance,
+    wildcard with credentials, subdomain matching bypasses, and protocol downgrade issues.
+    These misconfigurations can allow attackers to steal sensitive data cross-origin.
+  reference:
+    - https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+    - https://portswigger.net/web-security/cors
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N
+    cvss-score: 8.1
+    cwe-id: CWE-942
+  metadata:
+    max-request: 6
+  tags: owasp-top10,misconfig,cors,cross-origin
+
+http:
+  # Test 1: Origin reflection — server blindly reflects any origin
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    headers:
+      Origin: "https://evil-attacker-{{randstr}}.com"
+
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        name: reflected-origin
+        dsl:
+          - 'contains(header, "Access-Control-Allow-Origin: https://evil-attacker-")'
+          - 'contains(header, "Access-Control-Allow-Credentials: true")'
+        condition: and
+
+    extractors:
+      - type: kval
+        name: cors-headers-reflected
+        kval:
+          - Access-Control-Allow-Origin
+          - Access-Control-Allow-Credentials
+
+  # Test 2: Null origin accepted with credentials
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    headers:
+      Origin: "null"
+
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        name: null-origin-accepted
+        dsl:
+          - 'contains(header, "Access-Control-Allow-Origin: null")'
+          - 'contains(header, "Access-Control-Allow-Credentials: true")'
+        condition: and
+
+  # Test 3: Subdomain matching bypass (prefix/suffix attacks)
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    headers:
+      Origin: "https://{{Hostname}}.evil-{{randstr}}.com"
+
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        name: subdomain-prefix-bypass
+        dsl:
+          - 'contains(header, "Access-Control-Allow-Origin: https://{{Hostname}}.evil-")'
+          - 'contains(header, "Access-Control-Allow-Credentials: true")'
+        condition: and
+
+  # Test 4: HTTP protocol downgrade
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    headers:
+      Origin: "http://{{Hostname}}"
+
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        name: http-origin-on-https
+        dsl:
+          - 'contains(header, "Access-Control-Allow-Origin: http://{{Hostname}}")'
+          - 'contains(header, "Access-Control-Allow-Credentials: true")'
+          - 'contains(BaseURL, "https://")'
+        condition: and
+
+  # Test 5: Wildcard with credentials (spec violation, some servers still do it)
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    headers:
+      Origin: "https://anything.com"
+
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        name: wildcard-with-credentials
+        dsl:
+          - 'contains(header, "Access-Control-Allow-Origin: *")'
+          - 'contains(header, "Access-Control-Allow-Credentials: true")'
+        condition: and
+
+  # Test 6: Preflight check — dangerous methods allowed
+  - raw:
+      - |
+        OPTIONS {{BaseURL}} HTTP/1.1
+        Host: {{Hostname}}
+        Origin: https://evil-{{randstr}}.com
+        Access-Control-Request-Method: PUT
+        Access-Control-Request-Headers: X-Custom-Header, Authorization
+
+    matchers-condition: and
+    matchers:
+      - type: dsl
+        name: dangerous-preflight
+        dsl:
+          - 'contains(header, "Access-Control-Allow-Methods") && (contains(header, "PUT") || contains(header, "DELETE") || contains(header, "PATCH"))'
+          - 'contains(header, "Access-Control-Allow-Origin") && !contains(header, "Access-Control-Allow-Origin: *")'
+          - 'contains(header, "Access-Control-Allow-Credentials: true")'
+        condition: and
+
+    extractors:
+      - type: kval
+        name: allowed-methods
+        kval:
+          - Access-Control-Allow-Methods
+          - Access-Control-Allow-Headers
+          - Access-Control-Max-Age

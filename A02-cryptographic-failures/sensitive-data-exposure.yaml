@@ -1,0 +1,146 @@
+id: cryptographic-failures-sensitive-exposure
+
+info:
+  name: Cryptographic Failures - Sensitive Data & Weak Crypto Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects cryptographic failures including cleartext sensitive data transmission,
+    weak TLS configurations exposed via response headers, hardcoded API keys and secrets
+    in page source, password hashes in responses, and missing security headers that
+    indicate weak transport-layer protection.
+  reference:
+    - https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    cvss-score: 7.5
+    cwe-id: CWE-311
+  metadata:
+    max-request: 4
+  tags: owasp-top10,cryptographic-failures,secrets,api-keys,detection-only
+
+http:
+  # Test 1: Missing security headers indicating weak transport protection
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: missing-hsts
+        dsl:
+          - '!contains(header, "Strict-Transport-Security")'
+
+      - type: dsl
+        name: weak-hsts
+        dsl:
+          - 'contains(header, "Strict-Transport-Security") && !contains(header, "includeSubDomains")'
+
+      - type: dsl
+        name: missing-content-type-options
+        dsl:
+          - '!contains(header, "X-Content-Type-Options")'
+
+      - type: dsl
+        name: missing-frame-options
+        dsl:
+          - '!contains(header, "X-Frame-Options") && !contains(header, "frame-ancestors")'
+
+    extractors:
+      - type: kval
+        name: security-headers-present
+        kval:
+          - Strict-Transport-Security
+          - X-Content-Type-Options
+          - X-Frame-Options
+          - Content-Security-Policy
+          - X-XSS-Protection
+          - Referrer-Policy
+          - Permissions-Policy
+
+  # Test 2: Hardcoded secrets and API keys in page source
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+      - "{{BaseURL}}/config.js"
+      - "{{BaseURL}}/app.js"
+
+    matchers-condition: or
+    matchers:
+      # AWS keys
+      - type: regex
+        name: aws-access-key
+        regex:
+          - '(?:AKIA|A3T[A-Z0-9])[A-Z0-9]{16}'
+        part: body
+
+      # AWS secret key pattern
+      - type: regex
+        name: aws-secret-key
+        regex:
+          - '(?i)(?:aws_secret_access_key|aws_secret|secret_key)\s*[=:]\s*["\x27]?[A-Za-z0-9/+=]{40}["\x27]?'
+        part: body
+
+      # Google API key
+      - type: regex
+        name: google-api-key
+        regex:
+          - 'AIza[0-9A-Za-z_-]{35}'
+        part: body
+
+      # GitHub token
+      - type: regex
+        name: github-token
+        regex:
+          - '(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}'
+        part: body
+
+      # Stripe API key
+      - type: regex
+        name: stripe-key
+        regex:
+          - '(?:sk|pk)_(?:test|live)_[0-9a-zA-Z]{24,}'
+        part: body
+
+      # Generic private key
+      - type: regex
+        name: private-key
+        regex:
+          - '-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'
+        part: body
+
+      # Generic API key patterns
+      - type: regex
+        name: generic-api-key
+        regex:
+          - '(?i)(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token)\s*[=:]\s*["\x27]?[A-Za-z0-9_-]{20,}["\x27]?'
+        part: body
+
+      # Password hashes in response
+      - type: regex
+        name: password-hash-exposed
+        regex:
+          - '\$2[aby]\$[0-9]{2}\$[A-Za-z0-9./]{53}'
+          - '\$argon2(?:i|d|id)\$[a-zA-Z0-9=,$+/]+'
+          - '[a-f0-9]{32}:[a-f0-9]{2,16}'
+        part: body
+
+      # Database connection strings
+      - type: regex
+        name: connection-string
+        regex:
+          - '(?i)(?:mongodb|mysql|postgresql|postgres|redis|amqp|mssql)://[^\s<"]{10,}'
+          - '(?i)(?:Server|Data Source)=[^;]+;(?:.*?)(?:Password|Pwd)=[^;]+'
+        part: body
+
+    extractors:
+      - type: regex
+        name: exposed-secrets
+        group: 0
+        regex:
+          - '(?:AKIA|A3T[A-Z0-9])[A-Z0-9]{16}'
+          - 'AIza[0-9A-Za-z_-]{35}'
+          - '(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}'
+          - '(?:sk|pk)_(?:test|live)_[0-9a-zA-Z]{24,}'
+          - '(?i)(?:mongodb|mysql|postgresql|redis)://[^\s<"]{10,100}'

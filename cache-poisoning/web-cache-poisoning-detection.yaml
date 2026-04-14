@@ -1,0 +1,162 @@
+id: web-cache-poisoning-detection
+
+info:
+  name: Web Cache Poisoning - Unkeyed Header Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects web cache poisoning vulnerabilities by identifying unkeyed HTTP headers
+    that influence response content. Tests X-Forwarded-Host, X-Forwarded-Scheme,
+    X-Original-URL, X-Rewrite-URL, and other commonly unkeyed headers against CDN
+    and reverse proxy caches. Confirms cache integration and tests whether injected
+    header values appear in cached responses. Targets Cloudflare, Fastly, Varnish,
+    Akamai, CloudFront, and Nginx cache configurations.
+  reference:
+    - https://portswigger.net/research/practical-web-cache-poisoning
+    - https://portswigger.net/research/web-cache-entanglement
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:H/A:N
+    cvss-score: 7.1
+    cwe-id: CWE-444
+  metadata:
+    max-request: 10
+  tags: cache-poisoning,cdn,unkeyed-header,detection-only
+
+variables:
+  poison_canary: "nuclei-cache-test-{{randstr}}"
+
+http:
+  # Test 1: X-Forwarded-Host reflection in response (most common vector)
+  - raw:
+      - |
+        GET /?cachebust={{randstr}}1 HTTP/1.1
+        Host: {{Hostname}}
+        X-Forwarded-Host: {{poison_canary}}.com
+        Accept: text/html
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: xfh-reflected-in-body
+        dsl:
+          - 'contains(body, "{{poison_canary}}.com")'
+
+    extractors:
+      - type: kval
+        name: cache-headers
+        kval:
+          - X-Cache
+          - X-Cache-Hits
+          - CF-Cache-Status
+          - X-Varnish
+          - Age
+          - X-Served-By
+
+  # Test 2: X-Forwarded-Scheme protocol override
+  - raw:
+      - |
+        GET /?cachebust={{randstr}}2 HTTP/1.1
+        Host: {{Hostname}}
+        X-Forwarded-Scheme: nothttps
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: xfs-protocol-override
+        dsl:
+          - 'status_code == 301 || status_code == 302'
+          - 'contains(header, "Location") && contains(header, "nothttps")'
+        condition: and
+
+  # Test 3: X-Original-URL / X-Rewrite-URL path override (Symfony/IIS)
+  - raw:
+      - |
+        GET /?cachebust={{randstr}}3 HTTP/1.1
+        Host: {{Hostname}}
+        X-Original-URL: /admin
+        Accept: text/html
+      - |
+        GET /?cachebust={{randstr}}4 HTTP/1.1
+        Host: {{Hostname}}
+        X-Rewrite-URL: /admin
+        Accept: text/html
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: x-original-url-override
+        dsl:
+          - 'status_code_1 == 200 && (contains(body_1, "admin") || contains(body_1, "dashboard")) && !contains(body_1, "Not Found")'
+          - 'status_code_2 == 200 && (contains(body_2, "admin") || contains(body_2, "dashboard")) && !contains(body_2, "Not Found")'
+        condition: or
+
+  # Test 4: Cache-key normalization — path parameter injection
+  - raw:
+      - |
+        GET /;nuclei=test?cachebust={{randstr}}5 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?cachebust={{randstr}}5 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: path-parameter-cache-deception
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 == 200 && body_1 == body_2'
+
+  # Test 5: Vary header analysis — check if important headers are keyed
+  - raw:
+      - |
+        GET /?cachebust={{randstr}}6 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+        X-Forwarded-Host: {{poison_canary}}.com
+        X-Forwarded-Proto: http
+        X-Forwarded-Port: 1337
+
+    matchers:
+      - type: dsl
+        name: missing-vary-header
+        dsl:
+          - 'contains(body, "{{poison_canary}}") && (!contains(header, "Vary") || !contains(header, "X-Forwarded"))'
+          - '(contains(header, "X-Cache: HIT") || contains(header, "CF-Cache-Status: HIT") || contains(header, "Age:")) && contains(body, "{{poison_canary}}")'
+        condition: or
+
+  # Test 6: Fat GET / request body cache poisoning
+  - raw:
+      - |
+        GET /?cachebust={{randstr}}7 HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Accept: text/html
+        Content-Length: 18
+
+        callback={{poison_canary}}
+
+    matchers:
+      - type: dsl
+        name: fat-get-cache-poison
+        dsl:
+          - 'status_code == 200 && contains(body, "{{poison_canary}}")'
+
+    extractors:
+      - type: kval
+        name: all-cache-headers
+        kval:
+          - X-Cache
+          - X-Cache-Hits
+          - CF-Cache-Status
+          - X-Varnish
+          - Age
+          - X-Served-By
+          - X-Cache-Status
+          - Fastly-Debug-TTL

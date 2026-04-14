@@ -1,0 +1,125 @@
+id: sqli-boolean-based-blind-detection
+
+info:
+  name: SQL Injection - Boolean-Based Blind Detection (Non-Destructive)
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects boolean-based blind SQL injection by comparing application responses
+    between always-true and always-false conditions. Uses response length differential
+    and content comparison to identify injectable parameters. Fully non-destructive —
+    only uses conditional SELECT logic.
+  reference:
+    - https://owasp.org/Top10/A03_2021-Injection/
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-89
+  metadata:
+    max-request: 12
+  tags: owasp-top10,sqli,injection,boolean-based,blind,detection-only
+
+http:
+  # Test 1: Numeric parameter — true vs false condition
+  - raw:
+      - |
+        GET /?id=1%20AND%201=1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1%20AND%201=2 HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: numeric-boolean-differential
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 != status_code_1'
+          - 'status_code_1 == 200 && status_code_2 == 200 && (len(body_1) != len(body_2)) && (len(body_1) - len(body_2) > 50 || len(body_2) - len(body_1) > 50)'
+        condition: or
+
+  # Test 2: String parameter — single-quote true vs false
+  - raw:
+      - |
+        GET /?id=1'%20AND%20'1'='1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1'%20AND%20'1'='2 HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: string-boolean-differential
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 != status_code_1'
+          - 'status_code_1 == 200 && status_code_2 == 200 && (len(body_1) != len(body_2)) && (len(body_1) - len(body_2) > 50 || len(body_2) - len(body_1) > 50)'
+        condition: or
+
+  # Test 3: Parenthesis-wrapped conditions (common in WHERE clauses)
+  - raw:
+      - |
+        GET /?id=1')%20AND%20('1'='1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1')%20AND%20('1'='2 HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: paren-boolean-differential
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 != status_code_1'
+          - 'status_code_1 == 200 && status_code_2 == 200 && (len(body_1) != len(body_2)) && (len(body_1) - len(body_2) > 50 || len(body_2) - len(body_1) > 50)'
+        condition: or
+
+  # Test 4: Mathematical proof — id=2-1 should equal id=1
+  - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=2-1 HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: arithmetic-injection-proof
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 == 200 && len(body_1) == len(body_2) && body_1 == body_2'
+
+  # Test 5: CASE expression based (database-agnostic)
+  - raw:
+      - |
+        GET /?id=(CASE%20WHEN%201=1%20THEN%201%20ELSE%200%20END) HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=(CASE%20WHEN%201=2%20THEN%201%20ELSE%200%20END) HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: case-expression-differential
+        dsl:
+          - 'status_code_1 == 200 && (status_code_2 != status_code_1 || (len(body_1) != len(body_2) && (len(body_1) - len(body_2) > 50 || len(body_2) - len(body_1) > 50)))'
+
+  # Test 6: ORDER BY column enumeration (safe fingerprinting)
+  - raw:
+      - |
+        GET /?id=1%20ORDER%20BY%201 HTTP/1.1
+        Host: {{Hostname}}
+      - |
+        GET /?id=1%20ORDER%20BY%20999999 HTTP/1.1
+        Host: {{Hostname}}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: order-by-enumeration
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 != 200'
+          - 'status_code_1 == 200 && status_code_2 == 200 && len(body_1) != len(body_2)'
+        condition: or

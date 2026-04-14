@@ -1,0 +1,104 @@
+id: spring-boot-actuator-comprehensive
+
+info:
+  name: Spring Boot Actuator - Comprehensive Endpoint Exposure
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects exposed Spring Boot Actuator endpoints across multiple versions (1.x and 2.x+).
+    Actuator endpoints can leak environment variables, database credentials, heap dumps,
+    thread states, and full application configuration. This template checks both default
+    and non-default base paths including custom context paths commonly seen in production.
+  reference:
+    - https://docs.spring.io/spring-boot/docs/current/reference/html/actuator.html
+    - https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    cvss-score: 7.5
+    cwe-id: CWE-16
+    cpe: cpe:2.3:a:pivotal_software:spring_boot:*:*:*:*:*:*:*:*
+  metadata:
+    max-request: 24
+    shodan-query: http.favicon.hash:116323821
+    fofa-query: app="Spring-Boot"
+  tags: owasp-top10,misconfig,spring,spring-boot,actuator,exposure
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator"
+      - "{{BaseURL}}/actuator/env"
+      - "{{BaseURL}}/actuator/configprops"
+      - "{{BaseURL}}/actuator/mappings"
+      - "{{BaseURL}}/actuator/beans"
+      - "{{BaseURL}}/actuator/heapdump"
+      - "{{BaseURL}}/actuator/threaddump"
+      - "{{BaseURL}}/actuator/loggers"
+      - "{{BaseURL}}/actuator/metrics"
+      - "{{BaseURL}}/actuator/scheduledtasks"
+      - "{{BaseURL}}/actuator/httptrace"
+      - "{{BaseURL}}/actuator/caches"
+      # Spring Boot 1.x legacy paths
+      - "{{BaseURL}}/env"
+      - "{{BaseURL}}/configprops"
+      - "{{BaseURL}}/mappings"
+      - "{{BaseURL}}/beans"
+      - "{{BaseURL}}/dump"
+      - "{{BaseURL}}/trace"
+      # Common custom context paths
+      - "{{BaseURL}}/manage/actuator"
+      - "{{BaseURL}}/management/actuator/env"
+      - "{{BaseURL}}/api/actuator"
+      - "{{BaseURL}}/admin/actuator"
+      - "{{BaseURL}}/system/actuator/env"
+      - "{{BaseURL}}/internal/actuator"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: actuator-index
+        dsl:
+          - 'status_code == 200 && contains(body, "_links") && contains(body, "actuator")'
+
+      - type: dsl
+        name: env-exposure
+        dsl:
+          - 'status_code == 200 && (contains(body, "propertySources") || contains(body, "systemProperties") || contains(body, "spring.datasource"))'
+
+      - type: dsl
+        name: configprops-exposure
+        dsl:
+          - 'status_code == 200 && (contains(body, "contexts") || contains(body, "beans")) && contains(content_type, "json")'
+
+      - type: dsl
+        name: mappings-exposure
+        dsl:
+          - 'status_code == 200 && contains(body, "dispatcherServlets") && contains(content_type, "json")'
+
+      - type: dsl
+        name: heapdump-exposure
+        dsl:
+          - 'status_code == 200 && contains(content_type, "octet-stream")'
+
+      - type: dsl
+        name: httptrace-exposure
+        dsl:
+          - 'status_code == 200 && contains(body, "traces") && contains(body, "timestamp") && contains(body, "request")'
+
+    extractors:
+      - type: regex
+        name: datasource-urls
+        group: 1
+        regex:
+          - '"spring\.datasource\.url"\s*:\s*\{\s*"value"\s*:\s*"([^"]+)"'
+          - '"jdbc[^"]*"'
+      - type: regex
+        name: credential-keys
+        group: 0
+        regex:
+          - '"[^"]*(?:password|secret|key|token|credential)[^"]*"\s*:\s*\{[^}]*"value"'
+      - type: kval
+        name: spring-version
+        kval:
+          - X-Application-Context

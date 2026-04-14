@@ -1,0 +1,169 @@
+id: atlassian-critical-cve-detection
+
+info:
+  name: Atlassian Products Critical CVEs (2023-2025) Detection
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects critical unauth RCE and auth bypass CVEs in Atlassian products:
+    - CVE-2023-22515: Confluence broken access control (admin account creation)
+    - CVE-2023-22518: Confluence improper authorization (data destruction)
+    - CVE-2023-22527: Confluence OGNL/SSTI template injection RCE
+    - CVE-2024-21683: Confluence authenticated RCE
+    - CVE-2023-46747: BIG-IP authentication bypass (related infrastructure)
+    All checks are detection-only — no exploitation, no account creation.
+  reference:
+    - https://nvd.nist.gov/vuln/detail/CVE-2023-22515
+    - https://nvd.nist.gov/vuln/detail/CVE-2023-22518
+    - https://nvd.nist.gov/vuln/detail/CVE-2023-22527
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 10.0
+    cwe-id: CWE-94
+  metadata:
+    max-request: 12
+  tags: atlassian,confluence,cve-2023-22515,cve-2023-22518,cve-2023-22527,detection-only
+
+http:
+  # === CVE-2023-22515: Confluence Broken Access Control ===
+  # Detection: check if setup endpoint is accessible (should be blocked post-install)
+  - method: GET
+    path:
+      - "{{BaseURL}}/server-info.action"
+      - "{{BaseURL}}/setup/setupadministrator.action"
+      - "{{BaseURL}}/setup/setupadministrator-start.action"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: cve-2023-22515-setup-accessible
+        dsl:
+          - 'status_code == 200 && (contains(body, "Set up system administrator") || contains(body, "setupadministrator"))'
+
+      - type: dsl
+        name: confluence-version-fingerprint
+        dsl:
+          - 'status_code == 200 && contains(body, "Confluence") && (contains(body, "ajs-version-number") || contains(body, "confluence-version"))'
+
+    extractors:
+      - type: regex
+        name: confluence-version
+        group: 1
+        regex:
+          - 'ajs-version-number"\s*content="([^"]+)"'
+          - '<meta name="confluence-version" content="([^"]+)"'
+
+  # CVE-2023-22515: path parameter bypass
+  - raw:
+      - |
+        GET /server-info.action?bootstrapStatusProvider.applicationConfig.setupComplete=false HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: cve-2023-22515-param-bypass
+        dsl:
+          - 'status_code == 200 && (contains(body, "setup") || contains(body, "administrator"))'
+          - '!contains(body, "Confluence is currently being set up")'
+        condition: and
+
+  # === CVE-2023-22518: Confluence Improper Authorization ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/json/setup-restore.action"
+      - "{{BaseURL}}/json/setup-restore-local.action"
+      - "{{BaseURL}}/json/setup-restore-progress.action"
+
+    stop-at-first-match: false
+    matchers:
+      - type: dsl
+        name: cve-2023-22518-restore-accessible
+        dsl:
+          - 'status_code == 200 && !contains(body, "404") && !contains(body, "Not Found")'
+
+  # === CVE-2023-22527: Confluence SSTI/OGNL Injection ===
+  # Detection: template injection via label parameter
+  - raw:
+      - |
+        POST /template/aui/text-inline.vm HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Accept: text/html
+
+        label=%23LET+%24_v%3D267*269+%23END+${_v}
+
+    matchers:
+      - type: dsl
+        name: cve-2023-22527-ssti-confirmed
+        dsl:
+          - 'status_code == 200 && contains(body, "71823")'
+
+  # OGNL detection via safe arithmetic probe
+  - raw:
+      - |
+        GET /template/aui/text-inline.vm?label=%24{267*269} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: confluence-ognl-eval
+        dsl:
+          - 'contains(body, "71823") && !contains(body, "${267")'
+
+  # === CONFLUENCE VERSION DETECTION ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/login.action"
+      - "{{BaseURL}}"
+
+    stop-at-first-match: true
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        words:
+          - "Confluence"
+        part: body
+
+    extractors:
+      - type: regex
+        name: version-from-login
+        group: 1
+        regex:
+          - 'ajs-version-number"\s*content="([^"]+)"'
+          - 'poweredby">Atlassian Confluence\s*([0-9]+\.[0-9]+\.[0-9]+)'
+          - '<meta name="confluence-version" content="([^"]+)"'
+
+  # === JIRA VERSION + CVE FINGERPRINTING ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/secure/Dashboard.jspa"
+      - "{{BaseURL}}/status"
+
+    stop-at-first-match: true
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        words:
+          - "Jira"
+          - "JIRA"
+        part: body
+        condition: or
+
+    extractors:
+      - type: regex
+        name: jira-version
+        group: 1
+        regex:
+          - 'ajs-version-number"\s*content="([^"]+)"'
+          - 'data-version="([^"]+)"'

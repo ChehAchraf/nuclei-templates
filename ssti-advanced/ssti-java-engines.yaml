@@ -1,0 +1,202 @@
+id: ssti-java-template-engines-detection
+
+info:
+  name: SSTI - Java Template Engine Detection (Thymeleaf / FreeMarker / Velocity / Pebble)
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Precision detection for Server-Side Template Injection in Java enterprise stacks.
+    Targets Thymeleaf (Spring Boot default), FreeMarker, Apache Velocity, and Pebble
+    template engines. Uses engine-specific expression syntax with mathematical proofs
+    to differentiate engines and confirm code evaluation. Zero command execution —
+    all payloads resolve to arithmetic results only.
+  reference:
+    - https://portswigger.net/research/server-side-template-injection
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-1336
+  metadata:
+    max-request: 16
+  tags: ssti,thymeleaf,freemarker,velocity,pebble,java,spring-boot,detection-only
+
+variables:
+  ssti_marker: "71589"
+
+http:
+  # === THYMELEAF (Spring Boot) ===
+  # Thymeleaf preprocessor expression: __${expr}__
+  - raw:
+      - |
+        GET /?name=__${267*269}__ HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: thymeleaf-preprocessor-ssti
+        dsl:
+          - 'contains(body, "71823") && !contains(body, "__${")'
+
+  # Thymeleaf fragment expression injection
+  - raw:
+      - |
+        GET /?fragment=__${T(java.lang.Math).abs(-{{ssti_marker}})}__::x HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: thymeleaf-fragment-ssti
+        dsl:
+          - 'contains(body, "{{ssti_marker}}")'
+
+  # Thymeleaf via path variable (Spring MVC pattern)
+  - raw:
+      - |
+        GET /__${267*269}__::x HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: thymeleaf-path-ssti
+        dsl:
+          - 'contains(body, "71823")'
+
+  # Thymeleaf SpEL in default view resolution
+  - raw:
+      - |
+        GET /?view=__${T(java.lang.Runtime).getRuntime().getClass().getName()}__ HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: thymeleaf-spel-class-leak
+        dsl:
+          - 'contains(body, "java.lang.Runtime")'
+
+  # === FREEMARKER ===
+  # FreeMarker built-in: ${expr}
+  - raw:
+      - |
+        GET /?name=${267*269} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?template=${267*269} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    stop-at-first-match: true
+    matchers:
+      - type: dsl
+        name: freemarker-expr-ssti
+        dsl:
+          - 'contains(body_1, "71823") && !contains(body_1, "${267")'
+          - 'contains(body_2, "71823") && !contains(body_2, "${267")'
+        condition: or
+
+  # FreeMarker string concatenation confirmation
+  - raw:
+      - |
+        GET /?name=${"fr" + "eemarker" + 267?string} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: freemarker-string-concat
+        dsl:
+          - 'contains(body, "freemarker267")'
+
+  # FreeMarker .api access (dangerous built-in for newer versions)
+  - raw:
+      - |
+        GET /?name=${.now?string("yyyy")} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: regex
+        name: freemarker-builtin-leak
+        regex:
+          - '20[2-9][0-9]'
+        part: body
+
+  # === APACHE VELOCITY ===
+  # Velocity: #set + evaluation
+  - raw:
+      - |
+        GET /?name=#set($x=267*269)${x} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: velocity-set-eval
+        dsl:
+          - 'contains(body, "71823") && !contains(body, "#set(")'
+
+  # Velocity class introspection
+  - raw:
+      - |
+        GET /?name=$class.inspect("java.lang.Math").type.getName() HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: velocity-class-introspection
+        dsl:
+          - 'contains(body, "java.lang.Math")'
+
+  # Velocity macro detection
+  - raw:
+      - |
+        GET /?name=#if(267*269==71823)VELOCITY_SSTI_CONFIRMED#end HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: word
+        name: velocity-conditional
+        words:
+          - "VELOCITY_SSTI_CONFIRMED"
+        part: body
+
+  # === PEBBLE ===
+  - raw:
+      - |
+        GET /?name={{ 267 * 269 }} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: dsl
+        name: pebble-expr-ssti
+        dsl:
+          - 'contains(body, "71823") && !contains(body, "{{ 267")'
+
+  # Pebble string filter confirmation
+  - raw:
+      - |
+        GET /?name={{ "pebble" | upper }} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: word
+        name: pebble-filter-ssti
+        words:
+          - "PEBBLE"
+        part: body
+
+    extractors:
+      - type: regex
+        name: template-errors
+        group: 0
+        regex:
+          - '(?i)((?:FreeMarker|Thymeleaf|Velocity|Pebble|SpEL)[\w\s.]*(?:Error|Exception|template)[^<\n]{0,300})'
+          - '(?i)(org\.(?:thymeleaf|freemarker|apache\.velocity|mitchellbosecke\.pebble)\.[^<\n]{0,200})'

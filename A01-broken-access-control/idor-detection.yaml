@@ -1,0 +1,116 @@
+id: idor-parameter-tampering-detection
+
+info:
+  name: IDOR - Insecure Direct Object Reference Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects potential Insecure Direct Object Reference (IDOR) vulnerabilities by
+    testing sequential ID enumeration, UUID guessing patterns, and response
+    differential analysis. Checks common API patterns for object reference exposure
+    including numeric IDs, predictable UUIDs, and encoded references. Detection only —
+    compares access control behavior without data exfiltration.
+  reference:
+    - https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+    - https://cheatsheetseries.owasp.org/cheatsheets/Insecure_Direct_Object_Reference_Prevention_Cheat_Sheet.html
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
+    cvss-score: 6.5
+    cwe-id: CWE-639
+  metadata:
+    max-request: 10
+  tags: owasp-top10,broken-access-control,idor,authorization,detection-only
+
+http:
+  # Test 1: Sequential numeric ID enumeration on common API endpoints
+  - raw:
+      - |
+        GET /api/users/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/users/2 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/users/100 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: sequential-id-accessible
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 == 200 && status_code_3 == 200'
+          - 'status_code_1 == 200 && status_code_2 == 200 && contains(body_1, "email") && contains(body_2, "email") && body_1 != body_2'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: exposed-pii-fields
+        group: 0
+        regex:
+          - '(?i)"(?:email|phone|address|ssn|credit_card|password|secret|token)"\s*:\s*"[^"]{1,100}"'
+
+  # Test 2: Common resource endpoints with ID enumeration
+  - raw:
+      - |
+        GET /api/orders/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/invoices/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/documents/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/files/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: resource-accessible
+        dsl:
+          - 'status_code_1 == 200 && contains(content_type_1, "json") && len(body_1) > 50'
+          - 'status_code_2 == 200 && contains(content_type_2, "json") && len(body_2) > 50'
+          - 'status_code_3 == 200 && contains(content_type_3, "json") && len(body_3) > 50'
+          - 'status_code_4 == 200 && (contains(content_type_4, "json") || contains(content_type_4, "octet-stream")) && len(body_4) > 50'
+        condition: or
+
+  # Test 3: GraphQL IDOR — querying other users' data
+  - raw:
+      - |
+        POST /graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"query":"{ user(id: 1) { id email name } }"}
+      - |
+        POST /graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"query":"{ user(id: 2) { id email name } }"}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: graphql-idor
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 == 200 && contains(body_1, "email") && contains(body_2, "email") && !contains(body_1, "error") && !contains(body_2, "error")'
+
+    extractors:
+      - type: regex
+        name: graphql-data-leaked
+        group: 0
+        regex:
+          - '"data"\s*:\s*\{[^}]{10,500}\}'

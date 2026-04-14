@@ -1,0 +1,197 @@
+id: laravel-critical-exposures
+
+info:
+  name: Laravel Critical Exposures - Ignition / Telescope / Horizon / Log Viewer
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects critical Laravel framework exposures including:
+    - Ignition/Whoops debug pages leaking APP_KEY, database credentials, and full stack traces
+    - Laravel Telescope debug dashboard (unauthenticated access)
+    - Laravel Horizon queue dashboard (unauthenticated access)
+    - Log Viewer with sensitive application logs
+    - APP_KEY exposure enabling deserialization RCE
+    - CVE-2021-3129 (Laravel Ignition RCE via phar:// deserialization)
+    - Environment file disclosure
+  reference:
+    - https://nvd.nist.gov/vuln/detail/CVE-2021-3129
+    - https://www.ambionics.io/blog/laravel-debug-rce
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-94
+  metadata:
+    max-request: 18
+  tags: laravel,ignition,telescope,horizon,cve-2021-3129,php,detection-only
+
+http:
+  # === IGNITION DEBUG PAGE ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/_ignition/health-check"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: ignition-health-check
+        dsl:
+          - 'contains(body, "can_execute_commands")'
+
+    extractors:
+      - type: regex
+        name: ignition-version
+        group: 0
+        regex:
+          - '"laravelVersion"\s*:\s*"[^"]*"'
+
+  # Ignition execute-solution endpoint (CVE-2021-3129 prerequisite)
+  - raw:
+      - |
+        POST /_ignition/execute-solution HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"solution":"Facade\\Ignition\\Solutions\\MakeViewVariableOptionalSolution","parameters":{"variableName":"nuclei_test","viewFile":""}}
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: ignition-rce-endpoint-open
+        dsl:
+          - 'status_code == 200 && !contains(body, "Method Not Allowed")'
+          - 'status_code == 500 && (contains(body, "Ignition") || contains(body, "file_get_contents") || contains(body, "ViewException"))'
+        condition: or
+
+  # CVE-2021-3129 specific: test for phar:// log clearing (detection only)
+  - raw:
+      - |
+        POST /_ignition/execute-solution HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+
+        {"solution":"Facade\\Ignition\\Solutions\\MakeViewVariableOptionalSolution","parameters":{"variableName":"x","viewFile":"php://filter/convert.base64-encode/resource=../storage/logs/laravel.log"}}
+
+    matchers:
+      - type: dsl
+        name: cve-2021-3129-log-access
+        dsl:
+          - 'status_code == 200 || (status_code == 500 && (contains(body, "base64") || contains(body, "log") || contains(body, "ViewException")))'
+          - '!contains(body, "404") && !contains(body, "Route not found")'
+        condition: and
+
+  # Debug page with APP_KEY extraction
+  - method: GET
+    path:
+      - "{{BaseURL}}/nonexistent-{{randstr}}"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 500
+
+      - type: dsl
+        name: laravel-debug-appkey-leak
+        dsl:
+          - '(contains(body, "Whoops") || contains(body, "Ignition")) && (contains(body, "APP_KEY") || contains(body, "DB_PASSWORD") || contains(body, "APP_DEBUG"))'
+
+    extractors:
+      - type: regex
+        name: app-key
+        group: 1
+        regex:
+          - 'APP_KEY["\s:=]+\s*["\x27]?(base64:[A-Za-z0-9+/=]{44})["\x27]?'
+      - type: regex
+        name: db-credentials
+        group: 0
+        regex:
+          - '(?i)DB_(?:HOST|DATABASE|USERNAME|PASSWORD)["\s:=]+\s*["\x27]?[^\s<"=\x27]{1,100}'
+      - type: regex
+        name: app-path
+        group: 0
+        regex:
+          - '/(?:home|var|srv)/[^\s<"]{5,100}/(?:app|vendor|routes)/'
+
+  # === LARAVEL TELESCOPE ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/telescope"
+      - "{{BaseURL}}/telescope/requests"
+      - "{{BaseURL}}/telescope/exceptions"
+      - "{{BaseURL}}/telescope/queries"
+      - "{{BaseURL}}/telescope/dumps"
+
+    stop-at-first-match: false
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: telescope-dashboard-open
+        dsl:
+          - 'contains(body, "Laravel Telescope") || contains(body, "telescope") && (contains(body, "requests") || contains(body, "exceptions"))'
+
+  # Telescope API (JSON data leak)
+  - method: GET
+    path:
+      - "{{BaseURL}}/telescope/telescope-api/requests"
+      - "{{BaseURL}}/telescope/telescope-api/exceptions"
+
+    stop-at-first-match: false
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: telescope-api-data-leak
+        dsl:
+          - 'contains(content_type, "json") && (contains(body, "\"entries\"") || contains(body, "\"content\"")) && len(body) > 100'
+
+  # === LARAVEL HORIZON ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/horizon"
+      - "{{BaseURL}}/horizon/api/stats"
+      - "{{BaseURL}}/horizon/api/masters"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: horizon-dashboard-open
+        dsl:
+          - 'status_code == 200 && (contains(body, "Laravel Horizon") || contains(body, "horizon-"))'
+
+      - type: dsl
+        name: horizon-api-data
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && (contains(body, "\"wait\"") || contains(body, "\"processes\"") || contains(body, "\"status\""))'
+
+  # === LOG VIEWER ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/log-viewer"
+      - "{{BaseURL}}/logs"
+      - "{{BaseURL}}/log-viewer/api/logs"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: log-viewer-open
+        dsl:
+          - 'status_code == 200 && (contains(body, "Log Viewer") || contains(body, "log-viewer"))'
+
+      - type: dsl
+        name: log-api-data
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && (contains(body, "\"logs\"") || contains(body, "\"level\""))'

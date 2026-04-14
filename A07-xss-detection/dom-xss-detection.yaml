@@ -1,0 +1,85 @@
+id: dom-xss-sink-source-detection
+
+info:
+  name: DOM-Based XSS - Sink & Source Pattern Detection
+  author: achraf-chehboun
+  severity: medium
+  description: |
+    Detects DOM-based XSS vulnerabilities by identifying dangerous JavaScript patterns
+    where user-controlled sources (location.hash, location.search, document.referrer,
+    window.name, postMessage) flow into dangerous sinks (innerHTML, document.write,
+    eval, setTimeout, jQuery.html). This is a static pattern analysis — no payloads are
+    sent, the template analyzes the JavaScript code served by the application.
+  reference:
+    - https://owasp.org/Top10/A03_2021-Injection/
+    - https://domgo.at/cxss/intro
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    cvss-score: 6.1
+    cwe-id: CWE-79
+  metadata:
+    max-request: 3
+  tags: owasp-top10,xss,dom-xss,source-sink,detection-only
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      # Dangerous source → sink: location directly into innerHTML
+      - type: regex
+        name: location-to-innerhtml
+        regex:
+          - '(?i)\.innerHTML\s*=\s*.*(?:location\.|document\.URL|document\.documentURI|document\.referrer|window\.name)'
+          - '(?i)\.innerHTML\s*=\s*.*(?:location\.hash|location\.search|location\.href)'
+        condition: or
+
+      # document.write with user input
+      - type: regex
+        name: document-write-sink
+        regex:
+          - '(?i)document\.write\s*\(\s*.*(?:location\.|document\.URL|document\.referrer|window\.name)'
+          - '(?i)document\.writeln\s*\(\s*.*(?:location\.|document\.URL|document\.referrer)'
+        condition: or
+
+      # eval/setTimeout/setInterval with user-controlled input
+      - type: regex
+        name: eval-sink
+        regex:
+          - '(?i)(?:eval|setTimeout|setInterval|Function)\s*\(\s*.*(?:location\.|document\.URL|document\.referrer|window\.name|\.search|\.hash)'
+        condition: or
+
+      # jQuery dangerous sinks: .html(), .append(), .prepend() with URL params
+      - type: regex
+        name: jquery-sink
+        regex:
+          - '(?i)\$\([^)]*\)\.(?:html|append|prepend|after|before|replaceWith)\s*\(\s*.*(?:location\.|document\.URL|window\.name|\.search|\.hash|decodeURIComponent)'
+          - '(?i)jQuery\([^)]*\)\.(?:html|append|prepend)\s*\(\s*.*(?:location\.|window\.name)'
+        condition: or
+
+      # URL fragment/parameter directly used without sanitization
+      - type: regex
+        name: url-param-to-dom
+        regex:
+          - '(?i)(?:decodeURIComponent|unescape)\s*\(\s*(?:location\.hash|location\.search|window\.location)'
+          - '(?i)new\s+URLSearchParams\s*\([^)]*\)\.get\s*\([^)]*\)\s*[^;]*\.innerHTML'
+        condition: or
+
+      # postMessage without origin validation
+      - type: regex
+        name: postmessage-no-origin-check
+        regex:
+          - '(?i)addEventListener\s*\(\s*["\x27]message["\x27]\s*,\s*function\s*\([^)]*\)\s*\{(?:(?!origin).)*(?:innerHTML|document\.write|eval|\.html\()'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: dangerous-patterns
+        group: 0
+        regex:
+          - '(?i)(\.innerHTML\s*=\s*[^;]{0,100}(?:location|document\.URL|window\.name)[^;]{0,50})'
+          - '(?i)(document\.write\s*\([^)]{0,100}(?:location|document\.URL)[^)]{0,50}\))'
+          - '(?i)((?:eval|setTimeout|setInterval)\s*\([^)]{0,100}(?:location|window\.name)[^)]{0,50}\))'
+          - '(?i)(\$\([^)]*\)\.html\s*\([^)]{0,100}(?:location|decodeURIComponent)[^)]{0,50}\))'

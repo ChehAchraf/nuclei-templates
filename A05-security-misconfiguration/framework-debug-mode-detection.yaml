@@ -1,0 +1,192 @@
+id: framework-debug-mode-comprehensive
+
+info:
+  name: Multi-Framework Debug Mode Detection
+  author: achraf-chehboun
+  severity: medium
+  description: |
+    Detects debug/development mode exposure across modern web frameworks including
+    Nuxt.js, Next.js, Django, Laravel, Ruby on Rails, ASP.NET, Express.js, and Flask.
+    Debug mode can expose stack traces, source code, environment variables, database
+    queries, and internal application state to unauthenticated users.
+  reference:
+    - https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    cvss-score: 7.5
+    cwe-id: CWE-215
+  metadata:
+    max-request: 16
+  tags: owasp-top10,misconfig,debug,nuxtjs,nextjs,django,laravel,rails,express
+
+http:
+  # Phase 1: Nuxt.js debug mode and development indicators
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+      - "{{BaseURL}}/_nuxt/"
+      - "{{BaseURL}}/__nuxt_devtools__/client/"
+      - "{{BaseURL}}/_payload.json"
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: nuxt-debug-mode
+        dsl:
+          - 'status_code == 200 && (contains(body, "__NUXT__") || contains(body, "__NUXT_DATA__")) && (contains(body, "devtools") || contains(body, "debug\":true") || contains(body, "dev:true"))'
+
+      - type: dsl
+        name: nuxt-devtools-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, "nuxt-devtools")'
+
+      - type: dsl
+        name: nuxt-source-map-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, ".js.map") && contains(body, "_nuxt")'
+
+    extractors:
+      - type: regex
+        name: nuxt-version
+        group: 1
+        regex:
+          - '"nuxtVersion"\s*:\s*"([^"]+)"'
+          - 'nuxt@([0-9]+\.[0-9]+\.[0-9]+)'
+
+  # Phase 2: Next.js development mode detection
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+      - "{{BaseURL}}/_next/static/development/_buildManifest.js"
+      - "{{BaseURL}}/_next/static/development/_ssgManifest.js"
+      - "{{BaseURL}}/__nextjs_original-stack-frame"
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: nextjs-dev-mode
+        dsl:
+          - 'status_code == 200 && (contains(body, "__NEXT_DATA__") && contains(body, "\"runtimeConfig\""))'
+
+      - type: dsl
+        name: nextjs-dev-build
+        dsl:
+          - 'status_code == 200 && contains(body, "development") && contains(body, "_buildManifest")'
+
+      - type: dsl
+        name: nextjs-stack-frame-exposed
+        dsl:
+          - 'status_code != 404 && contains(body, "stack") && contains(body, "frame")'
+
+    extractors:
+      - type: regex
+        name: nextjs-version
+        group: 1
+        regex:
+          - '"buildId"\s*:\s*"([^"]+)"'
+
+  # Phase 3: Django debug mode
+  - method: GET
+    path:
+      - "{{BaseURL}}/nonexistent-path-triggering-404-debug-{{randstr}}"
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: django-debug-enabled
+        dsl:
+          - 'contains(body, "Django") && contains(body, "Traceback") && contains(body, "INSTALLED_APPS")'
+
+      - type: dsl
+        name: django-debug-404
+        dsl:
+          - 'contains(body, "You\'re seeing this error because you have") && contains(body, "DEBUG = True")'
+
+      - type: dsl
+        name: django-technical-error
+        dsl:
+          - 'contains(body, "django.") && contains(body, "Settings") && (contains(body, "SECRET_KEY") || contains(body, "DATABASE"))'
+
+    extractors:
+      - type: regex
+        name: django-version
+        group: 1
+        regex:
+          - 'Django Version:\s*([0-9]+\.[0-9]+[0-9.]*)'
+      - type: regex
+        name: django-settings-module
+        group: 1
+        regex:
+          - 'DJANGO_SETTINGS_MODULE[^<]*<td>([^<]+)</td>'
+
+  # Phase 4: Laravel debug mode (Ignition error page)
+  - method: GET
+    path:
+      - "{{BaseURL}}/nonexistent-{{randstr}}"
+      - "{{BaseURL}}/_ignition/health-check"
+      - "{{BaseURL}}/_ignition/execute-solution"
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: laravel-debug-ignition
+        dsl:
+          - 'status_code == 500 && contains(body, "Ignition") && (contains(body, "laravel") || contains(body, "Whoops"))'
+
+      - type: dsl
+        name: laravel-ignition-health
+        dsl:
+          - 'status_code == 200 && contains(body, "can_execute_commands")'
+
+      - type: dsl
+        name: laravel-debug-whoops
+        dsl:
+          - 'contains(body, "Whoops\\Handler") || (contains(body, "vendor/laravel") && contains(body, "stack trace"))'
+
+    extractors:
+      - type: regex
+        name: laravel-version
+        group: 1
+        regex:
+          - 'Laravel\s+v?([0-9]+\.[0-9]+\.[0-9]+)'
+      - type: regex
+        name: laravel-app-path
+        group: 0
+        regex:
+          - '/(?:home|var|srv)/[^\s<"]+/(?:app|vendor)/[^\s<"]*'
+
+  # Phase 5: Ruby on Rails, ASP.NET, Express.js, Flask
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: rails-debug-mode
+        dsl:
+          - 'contains(body, "Action Controller") && contains(body, "Exception") && contains(body, "Rails.root")'
+
+      - type: dsl
+        name: aspnet-detailed-errors
+        dsl:
+          - 'contains(body, "Server Error in") && contains(body, "Application") && contains(body, "Stack Trace")'
+
+      - type: dsl
+        name: aspnet-developer-exception
+        dsl:
+          - 'contains(body, "DeveloperExceptionPage") || contains(body, "ASPNETCORE_ENVIRONMENT") || (contains(body, "Microsoft.AspNetCore") && contains(body, "Exception"))'
+
+      - type: dsl
+        name: flask-debug-werkzeug
+        dsl:
+          - 'contains(body, "Werkzeug") && contains(body, "Debugger") && contains(body, "traceback")'
+
+    extractors:
+      - type: kval
+        name: server-headers
+        kval:
+          - X-Powered-By
+          - Server
+          - X-AspNet-Version
+          - X-AspNetMvc-Version

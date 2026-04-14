@@ -1,0 +1,175 @@
+id: sensitive-files-comprehensive-detection
+
+info:
+  name: Sensitive Files & Backup Exposure Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects exposed sensitive files including environment configuration (.env),
+    version control metadata (.git), backup files, database dumps, configuration
+    files, deployment manifests, and source code artifacts. These exposures can
+    reveal database credentials, API keys, internal architecture, and deployment secrets.
+  reference:
+    - https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+    - https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+    cvss-score: 7.5
+    cwe-id: CWE-538
+  metadata:
+    max-request: 36
+  tags: owasp-top10,exposure,env-file,git,backup,config,detection-only
+
+http:
+  # Environment files
+  - method: GET
+    path:
+      - "{{BaseURL}}/.env"
+      - "{{BaseURL}}/.env.local"
+      - "{{BaseURL}}/.env.production"
+      - "{{BaseURL}}/.env.staging"
+      - "{{BaseURL}}/.env.development"
+      - "{{BaseURL}}/.env.backup"
+      - "{{BaseURL}}/.env.old"
+      - "{{BaseURL}}/.env.example"
+
+    stop-at-first-match: false
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: regex
+        regex:
+          - '(?i)(?:DB_|DATABASE_|MYSQL_|MONGO_|REDIS_|API_|SECRET_|KEY_|TOKEN_|PASSWORD|AWS_|SMTP_|MAIL_)[A-Z_]*\s*='
+        part: body
+
+      - type: dsl
+        dsl:
+          - '!contains(body, "<html") && !contains(body, "<!DOCTYPE")'
+
+    extractors:
+      - type: regex
+        name: env-secrets
+        group: 0
+        regex:
+          - '(?i)(?:PASSWORD|SECRET|KEY|TOKEN|CREDENTIAL)[A-Z_]*\s*=\s*\S+'
+          - '(?i)(?:DATABASE_URL|DB_HOST|REDIS_URL|MONGO_URI)\s*=\s*\S+'
+
+  # Git exposure
+  - method: GET
+    path:
+      - "{{BaseURL}}/.git/config"
+      - "{{BaseURL}}/.git/HEAD"
+      - "{{BaseURL}}/.git/index"
+      - "{{BaseURL}}/.gitignore"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: git-config-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, "[core]") && contains(body, "repositoryformatversion")'
+
+      - type: dsl
+        name: git-head-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, "ref: refs/")'
+
+      - type: dsl
+        name: git-index-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, "DIRC")'
+
+    extractors:
+      - type: regex
+        name: git-remote-url
+        group: 1
+        regex:
+          - 'url\s*=\s*(\S+)'
+
+  # Configuration and backup files
+  - method: GET
+    path:
+      - "{{BaseURL}}/config.php"
+      - "{{BaseURL}}/config.php.bak"
+      - "{{BaseURL}}/config.php.old"
+      - "{{BaseURL}}/wp-config.php.bak"
+      - "{{BaseURL}}/web.config"
+      - "{{BaseURL}}/appsettings.json"
+      - "{{BaseURL}}/application.yml"
+      - "{{BaseURL}}/application.properties"
+      - "{{BaseURL}}/database.yml"
+      - "{{BaseURL}}/settings.py"
+      - "{{BaseURL}}/config/database.yml"
+      - "{{BaseURL}}/composer.json"
+      - "{{BaseURL}}/package.json"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: php-config-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "DB_PASSWORD") || contains(body, "db_pass") || contains(body, "mysql_connect"))'
+
+      - type: dsl
+        name: webconfig-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, "<configuration") && (contains(body, "connectionString") || contains(body, "appSettings"))'
+
+      - type: dsl
+        name: appsettings-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, "ConnectionStrings") && contains(content_type, "json")'
+
+      - type: dsl
+        name: spring-config-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "spring.datasource") || contains(body, "spring:") && contains(body, "password"))'
+
+      - type: dsl
+        name: rails-database-config
+        dsl:
+          - 'status_code == 200 && contains(body, "adapter:") && contains(body, "database:") && (contains(body, "password:") || contains(body, "username:"))'
+
+    extractors:
+      - type: regex
+        name: config-secrets
+        group: 0
+        regex:
+          - '(?i)(?:password|secret|key|token)\s*[:=]\s*["\x27]?[^\s"<\x27]{3,}["\x27]?'
+          - '(?i)(?:mysql|postgresql|mongodb|redis)://[^\s<"]{10,}'
+
+  # Backup and source code archives
+  - method: GET
+    path:
+      - "{{BaseURL}}/backup.sql"
+      - "{{BaseURL}}/backup.zip"
+      - "{{BaseURL}}/backup.tar.gz"
+      - "{{BaseURL}}/dump.sql"
+      - "{{BaseURL}}/database.sql"
+      - "{{BaseURL}}/db.sql"
+      - "{{BaseURL}}/site.zip"
+      - "{{BaseURL}}/www.zip"
+      - "{{BaseURL}}/source.zip"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: sql-dump-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "CREATE TABLE") || contains(body, "INSERT INTO") || contains(body, "mysqldump") || contains(body, "pg_dump"))'
+
+      - type: dsl
+        name: zip-archive-exposed
+        dsl:
+          - 'status_code == 200 && contains(content_type, "zip")'
+
+      - type: dsl
+        name: gzip-archive-exposed
+        dsl:
+          - 'status_code == 200 && (contains(content_type, "gzip") || contains(content_type, "x-tar"))'

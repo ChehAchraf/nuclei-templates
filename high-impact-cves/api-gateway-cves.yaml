@@ -1,0 +1,190 @@
+id: api-gateway-critical-cves
+
+info:
+  name: API Gateway Critical CVEs - Kong / Apache APISIX / Traefik / HAProxy
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Detects critical CVEs and misconfigurations in popular enterprise API gateways:
+    - Apache APISIX: Dashboard RCE (CVE-2022-24112), admin API exposure
+    - Kong Gateway: admin API unauthenticated access, plugin misconfiguration
+    - Traefik: dashboard exposure, API provider leaks
+    - HAProxy: HTTP request smuggling paths, stats page exposure
+    - Envoy: admin interface exposure
+    All detection-only probes without exploitation.
+  reference:
+    - https://nvd.nist.gov/vuln/detail/CVE-2022-24112
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-306
+  metadata:
+    max-request: 20
+  tags: api-gateway,kong,apisix,traefik,haproxy,envoy,detection-only
+
+http:
+  # === APACHE APISIX ===
+  # Admin API exposure (should never be public)
+  - method: GET
+    path:
+      - "{{BaseURL}}/apisix/admin/routes"
+      - "{{BaseURL}}/apisix/admin/services"
+      - "{{BaseURL}}/apisix/admin/upstreams"
+      - "{{BaseURL}}/apisix/admin/consumers"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: apisix-admin-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, "\"node\"") && contains(body, "\"key\"") && contains(content_type, "json")'
+          - 'status_code == 200 && contains(body, "\"routes\"") && contains(content_type, "json")'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: apisix-routes
+        group: 0
+        regex:
+          - '"uri"\s*:\s*"[^"]{1,200}"'
+
+  # APISIX Dashboard (CVE-2022-24112 prerequisite)
+  - method: GET
+    path:
+      - "{{BaseURL}}/apisix/dashboard/"
+      - "{{BaseURL}}/apisix/admin"
+
+    matchers:
+      - type: dsl
+        name: apisix-dashboard-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "APISIX") || contains(body, "apisix-dashboard"))'
+
+  # CVE-2022-24112: batch-requests plugin abuse detection
+  - raw:
+      - |
+        POST /apisix/batch-requests HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"headers":{"X-Real-IP":"127.0.0.1","Content-Type":"application/json"},"timeout":1500,"pipeline":[{"method":"GET","path":"/apisix/admin/routes","headers":{"X-API-KEY":"edd1c9f034335f136f87ad84b625c8f1"}}]}
+
+    matchers:
+      - type: dsl
+        name: cve-2022-24112-batch-requests
+        dsl:
+          - 'status_code == 200 && contains(body, "\"node\"") && contains(body, "routes")'
+
+  # === KONG GATEWAY ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+      - "{{BaseURL}}/status"
+
+    stop-at-first-match: false
+    matchers:
+      - type: dsl
+        name: kong-admin-api-exposed
+        dsl:
+          - 'status_code == 200 && contains(body, "\"tagline\"") && contains(body, "Kong")'
+
+    extractors:
+      - type: regex
+        name: kong-version
+        group: 1
+        regex:
+          - '"version"\s*:\s*"([^"]+)"'
+
+  - method: GET
+    path:
+      - "{{BaseURL}}/routes"
+      - "{{BaseURL}}/services"
+      - "{{BaseURL}}/plugins"
+      - "{{BaseURL}}/consumers"
+      - "{{BaseURL}}/upstreams"
+
+    stop-at-first-match: false
+    matchers:
+      - type: dsl
+        name: kong-admin-endpoints
+        dsl:
+          - 'status_code == 200 && (contains(body, "\"data\"") || contains(body, "\"total\"")) && contains(content_type, "json")'
+
+  # === TRAEFIK ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/dashboard/"
+      - "{{BaseURL}}/api/overview"
+      - "{{BaseURL}}/api/http/routers"
+      - "{{BaseURL}}/api/http/services"
+      - "{{BaseURL}}/api/http/middlewares"
+      - "{{BaseURL}}/api/entrypoints"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: traefik-dashboard-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "Traefik") || contains(body, "traefik"))'
+
+      - type: dsl
+        name: traefik-api-data-leak
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && (contains(body, "routers") || contains(body, "entryPoints") || contains(body, "middlewares"))'
+
+    extractors:
+      - type: regex
+        name: traefik-version
+        group: 1
+        regex:
+          - '"version"\s*:\s*"([^"]+)"'
+      - type: regex
+        name: traefik-routes
+        group: 0
+        regex:
+          - '"rule"\s*:\s*"[^"]{1,200}"'
+
+  # === HAPROXY ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/haproxy?stats"
+      - "{{BaseURL}}/haproxy-status"
+      - "{{BaseURL}}/stats"
+
+    stop-at-first-match: false
+    matchers:
+      - type: dsl
+        name: haproxy-stats-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "HAProxy") || contains(body, "haproxy")) && (contains(body, "Statistics") || contains(body, "frontend") || contains(body, "backend"))'
+
+  # === ENVOY PROXY ===
+  - method: GET
+    path:
+      - "{{BaseURL}}/ready"
+      - "{{BaseURL}}/config_dump"
+      - "{{BaseURL}}/clusters"
+      - "{{BaseURL}}/stats"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: envoy-admin-exposed
+        dsl:
+          - 'status_code == 200 && (contains(body, "envoy") || contains(body, "Envoy")) && (contains(body, "cluster") || contains(body, "listener"))'
+
+      - type: dsl
+        name: envoy-config-dump
+        dsl:
+          - 'status_code == 200 && contains(body, "\"configs\"") && (contains(body, "bootstrap") || contains(body, "static_clusters"))'
+
+    extractors:
+      - type: regex
+        name: envoy-version
+        group: 0
+        regex:
+          - 'envoy[._-]version["\s:]*"?([0-9]+\.[0-9]+\.[0-9]+)'

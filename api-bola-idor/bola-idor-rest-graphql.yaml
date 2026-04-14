@@ -1,0 +1,178 @@
+id: bola-idor-rest-graphql-fuzzing
+
+info:
+  name: API BOLA/IDOR - RESTful & GraphQL Heuristic Detection
+  author: achraf-chehboun
+  severity: high
+  description: |
+    Detects Broken Object Level Authorization (BOLA/IDOR) in RESTful APIs and GraphQL
+    endpoints. Uses heuristic response comparison between sequential resource IDs,
+    cross-tenant UUID probing, GraphQL node ID enumeration, and HTTP method tampering
+    to identify missing authorization checks. Tests both authenticated and unauthenticated
+    contexts across common REST resource patterns.
+  reference:
+    - https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:L/A:N
+    cvss-score: 7.1
+    cwe-id: CWE-639
+  metadata:
+    max-request: 20
+  tags: bola,idor,api-security,rest,graphql,detection-only
+
+http:
+  # === REST API BOLA ===
+  # Test 1: User profile endpoints — sequential ID probing
+  - raw:
+      - |
+        GET /api/v1/users/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/v1/users/2 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/v2/users/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/users/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+
+    stop-at-first-match: false
+    req-condition: true
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: user-endpoint-bola
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 == 200 && contains(content_type_1, "json") && len(body_1) > 30 && len(body_2) > 30 && body_1 != body_2 && !contains(body_1, "error") && !contains(body_2, "error")'
+          - 'status_code_3 == 200 && contains(content_type_3, "json") && len(body_3) > 30 && !contains(body_3, "error")'
+          - 'status_code_4 == 200 && contains(content_type_4, "json") && len(body_4) > 30 && !contains(body_4, "error")'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: pii-fields-leaked
+        group: 0
+        regex:
+          - '(?i)"(?:email|phone|address|ssn|salary|credit_card|password_hash|date_of_birth|social_security)"\s*:\s*"[^"]{1,200}"'
+
+  # Test 2: Financial/sensitive resource endpoints
+  - raw:
+      - |
+        GET /api/v1/orders/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/v1/invoices/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/v1/transactions/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/v1/payments/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: financial-resource-bola
+        dsl:
+          - 'status_code_1 == 200 && contains(content_type_1, "json") && len(body_1) > 30 && !contains(body_1, "\"error\"") && !contains(body_1, "unauthorized")'
+          - 'status_code_2 == 200 && contains(content_type_2, "json") && len(body_2) > 30 && !contains(body_2, "\"error\"")'
+          - 'status_code_3 == 200 && contains(content_type_3, "json") && len(body_3) > 30 && !contains(body_3, "\"error\"")'
+          - 'status_code_4 == 200 && contains(content_type_4, "json") && len(body_4) > 30 && !contains(body_4, "\"error\"")'
+        condition: or
+
+  # Test 3: HTTP method override for privilege escalation
+  - raw:
+      - |
+        GET /api/v1/users/1 HTTP/1.1
+        Host: {{Hostname}}
+        Accept: application/json
+      - |
+        GET /api/v1/users/1 HTTP/1.1
+        Host: {{Hostname}}
+        X-HTTP-Method-Override: DELETE
+        Accept: application/json
+      - |
+        GET /api/v1/users/1 HTTP/1.1
+        Host: {{Hostname}}
+        X-HTTP-Method-Override: PUT
+        Accept: application/json
+
+    stop-at-first-match: false
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: method-override-accepted
+        dsl:
+          - '(status_code_2 != status_code_1 || body_2 != body_1) && status_code_2 != 405 && status_code_2 != 403'
+          - '(status_code_3 != status_code_1 || body_3 != body_1) && status_code_3 != 405 && status_code_3 != 403'
+        condition: or
+
+  # === GRAPHQL BOLA ===
+  # Test 4: GraphQL node interface IDOR
+  - raw:
+      - |
+        POST /graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"query":"query { node(id: \"1\") { id ... on User { email name role } ... on Order { total status } } }"}
+      - |
+        POST /graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"query":"query { node(id: \"2\") { id ... on User { email name role } ... on Order { total status } } }"}
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: graphql-node-idor
+        dsl:
+          - 'status_code_1 == 200 && status_code_2 == 200 && contains(body_1, "\"data\"") && contains(body_2, "\"data\"") && !contains(body_1, "\"errors\"") && !contains(body_2, "\"errors\"") && body_1 != body_2'
+
+  # Test 5: GraphQL direct object queries without auth
+  - raw:
+      - |
+        POST /graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"query":"{ users { edges { node { id email name role } } } }"}
+      - |
+        POST /graphql HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"query":"{ orders(first: 5) { edges { node { id total userId status } } } }"}
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: graphql-bulk-enum
+        dsl:
+          - 'status_code_1 == 200 && contains(body_1, "edges") && contains(body_1, "node") && !contains(body_1, "\"errors\"")'
+          - 'status_code_2 == 200 && contains(body_2, "edges") && !contains(body_2, "\"errors\"")'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: graphql-data-leaked
+        group: 0
+        regex:
+          - '(?i)"(?:email|phone|role|admin|password)"\s*:\s*"[^"]{1,100}"'

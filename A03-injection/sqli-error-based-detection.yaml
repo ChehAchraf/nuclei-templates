@@ -1,0 +1,149 @@
+id: sqli-error-based-multi-db
+
+info:
+  name: SQL Injection - Error-Based Detection (Non-Destructive)
+  author: achraf-chehboun
+  severity: critical
+  description: |
+    Non-destructive error-based SQL injection detection across MySQL, PostgreSQL, MSSQL,
+    Oracle, and SQLite. Uses syntax-breaking payloads (single quotes, parentheses imbalance,
+    type coercion) that trigger database error messages WITHOUT modifying any data.
+    All payloads are SELECT-safe — no INSERT, UPDATE, DELETE, DROP, or ALTER operations.
+  reference:
+    - https://owasp.org/Top10/A03_2021-Injection/
+    - https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html
+  classification:
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+    cvss-score: 9.8
+    cwe-id: CWE-89
+  metadata:
+    max-request: 8
+  tags: owasp-top10,sqli,injection,error-based,detection-only
+
+variables:
+  # Syntax-breaking probes that never modify data
+  probe1: "'"
+  probe2: "'\"--"
+  probe3: "1' AND '1'='1"
+  probe4: "1 AND 1=CONVERT(int,(SELECT 1))--"
+  probe5: "') OR ('1'='1"
+  probe6: "1' OR '1'='1' AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT version())))--"
+  probe7: "1 UNION SELECT NULL--"
+  probe8: "{{probe1}})%20OR%20(1=1"
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/?id={{probe1}}"
+      - "{{BaseURL}}/?id={{probe2}}"
+      - "{{BaseURL}}/?q={{probe1}}"
+      - "{{BaseURL}}/?search={{probe1}}"
+      - "{{BaseURL}}/?page={{probe3}}"
+      - "{{BaseURL}}/?id={{probe4}}"
+      - "{{BaseURL}}/?category={{probe5}}"
+      - "{{BaseURL}}/?sort={{probe1}}"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      # MySQL error signatures
+      - type: regex
+        name: mysql-error
+        regex:
+          - '(?i)you have an error in your sql syntax'
+          - '(?i)warning.*?mysql_'
+          - '(?i)mysql_fetch_'
+          - '(?i)mysql_num_rows'
+          - '(?i)com\.mysql\.jdbc'
+          - '(?i)Unclosed quotation mark after the character string'
+          - '(?i)MySqlException'
+          - '(?i)valid MySQL result'
+          - '(?i)MySqlClient\.'
+          - '(?i)SQLSTATE\[HY000\]'
+        condition: or
+
+      # PostgreSQL error signatures
+      - type: regex
+        name: postgresql-error
+        regex:
+          - '(?i)PostgreSQL.*?ERROR'
+          - '(?i)Warning.*?\bpg_'
+          - '(?i)valid PostgreSQL result'
+          - '(?i)Npgsql\.'
+          - '(?i)PG::SyntaxError'
+          - '(?i)org\.postgresql\.util\.PSQLException'
+          - '(?i)ERROR:\s+syntax error at or near'
+          - '(?i)ERROR:\s+unterminated quoted string'
+        condition: or
+
+      # MSSQL error signatures
+      - type: regex
+        name: mssql-error
+        regex:
+          - '(?i)Driver.* SQL[\-_ ]*Server'
+          - '(?i)OLE DB.* SQL Server'
+          - '(?i)\bSQL Server\b.*?\bDriver\b'
+          - '(?i)Warning.*?mssql_'
+          - '(?i)Warning.*?odbc_'
+          - '(?i)\bSQL Server\b.*?Error'
+          - '(?i)Microsoft OLE DB Provider for SQL Server'
+          - '(?i)Msg \d+, Level \d+, State \d+'
+          - '(?i)Unclosed quotation mark after the character string'
+          - '(?i)Microsoft\.Data\.SqlClient'
+        condition: or
+
+      # Oracle error signatures
+      - type: regex
+        name: oracle-error
+        regex:
+          - '(?i)\bORA-\d{5}'
+          - '(?i)Oracle error'
+          - '(?i)Oracle.*?Driver'
+          - '(?i)Warning.*?\boci_'
+          - '(?i)Warning.*?\bora_'
+          - '(?i)oracle\.jdbc'
+          - '(?i)quoted string not properly terminated'
+        condition: or
+
+      # SQLite error signatures
+      - type: regex
+        name: sqlite-error
+        regex:
+          - '(?i)SQLite/JDBCDriver'
+          - '(?i)SQLite\.Exception'
+          - '(?i)System\.Data\.SQLite\.SQLiteException'
+          - '(?i)Warning.*?sqlite_'
+          - '(?i)Warning.*?SQLite3::'
+          - '(?i)\[SQLITE_ERROR\]'
+          - '(?i)SQLITE_MISUSE'
+          - '(?i)unrecognized token:.*?near'
+        condition: or
+
+      # Generic SQL error signatures
+      - type: regex
+        name: generic-sql-error
+        regex:
+          - '(?i)SQL syntax.*?error'
+          - '(?i)sql error'
+          - '(?i)Warning.*?SQL'
+          - '(?i)Syntax error.*?in query'
+          - '(?i)syntax error at end of input'
+          - '(?i)Data type mismatch'
+          - '(?i)ODBC SQL Server Driver'
+          - '(?i)SQLSTATE\['
+          - '(?i)PDOException'
+          - '(?i)Doctrine\\DBAL\\Exception'
+          - '(?i)Illuminate\\Database\\QueryException'
+          - '(?i)ActiveRecord::StatementInvalid'
+          - '(?i)Sequel::DatabaseError'
+        condition: or
+
+    extractors:
+      - type: regex
+        name: error-detail
+        group: 0
+        regex:
+          - '(?i)((?:sql|mysql|postgresql|oracle|sqlite|mssql|odbc)[\w\s]*(?:error|exception|warning)[^<\n]{0,200})'
+          - '(?i)(ORA-\d{5}[^<\n]{0,150})'
+          - '(?i)(SQLSTATE\[\w+\][^<\n]{0,150})'
+          - '(?i)(PDOException[^<\n]{0,150})'
