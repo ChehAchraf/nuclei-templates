@@ -6,10 +6,9 @@ info:
   severity: critical
   description: |
     Precision detection for Server-Side Template Injection in Java enterprise stacks.
-    Targets Thymeleaf (Spring Boot default), FreeMarker, Apache Velocity, and Pebble
-    template engines. Uses engine-specific expression syntax with mathematical proofs
-    to differentiate engines and confirm code evaluation. Zero command execution —
-    all payloads resolve to arithmetic results only.
+    Targets Thymeleaf (Spring Boot default), FreeMarker, Apache Velocity, and Pebble.
+    Uses canary-wrapped payloads and baseline differentials to eliminate false positives.
+    Canary pattern ensures the computed result only matches if genuine evaluation occurred.
   reference:
     - https://portswigger.net/research/server-side-template-injection
   classification:
@@ -17,88 +16,120 @@ info:
     cvss-score: 9.8
     cwe-id: CWE-1336
   metadata:
-    max-request: 16
+    max-request: 18
   tags: ssti,thymeleaf,freemarker,velocity,pebble,java,spring-boot,detection-only
-
-variables:
-  ssti_marker: "71589"
 
 http:
   # === THYMELEAF (Spring Boot) ===
-  # Thymeleaf preprocessor expression: __${expr}__
+  # Preprocessor expression: __${expr}__ with baseline comparison
   - raw:
       - |
-        GET /?name=__${267*269}__ HTTP/1.1
+        GET /?name=thymeleaf_baseline_xnlbz HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?name=__${267*269}__::x HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    req-condition: true
     matchers:
       - type: dsl
         name: thymeleaf-preprocessor-ssti
         dsl:
-          - 'contains(body, "71823") && !contains(body, "__${")'
+          - '!contains(body_1, "71823") && contains(body_2, "71823") && !contains(body_2, "__${")'
 
   # Thymeleaf fragment expression injection
   - raw:
       - |
-        GET /?fragment=__${T(java.lang.Math).abs(-{{ssti_marker}})}__::x HTTP/1.1
+        GET /?fragment=thymeleaf_baseline_xnlbz HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?fragment=__${T(java.lang.Math).abs(-71589)}__::x HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    req-condition: true
     matchers:
       - type: dsl
         name: thymeleaf-fragment-ssti
         dsl:
-          - 'contains(body, "{{ssti_marker}}")'
+          - '!contains(body_1, "71589") && contains(body_2, "71589")'
 
   # Thymeleaf via path variable (Spring MVC pattern)
   - raw:
+      - |
+        GET /thymeleaf_baseline_xnlbz HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
       - |
         GET /__${267*269}__::x HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    req-condition: true
     matchers:
       - type: dsl
         name: thymeleaf-path-ssti
         dsl:
-          - 'contains(body, "71823")'
+          - '!contains(body_1, "71823") && contains(body_2, "71823")'
 
-  # Thymeleaf SpEL in default view resolution
+  # Thymeleaf SpEL class name leak
   - raw:
+      - |
+        GET /?view=thymeleaf_baseline_xnlbz HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
       - |
         GET /?view=__${T(java.lang.Runtime).getRuntime().getClass().getName()}__ HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    req-condition: true
     matchers:
       - type: dsl
         name: thymeleaf-spel-class-leak
         dsl:
-          - 'contains(body, "java.lang.Runtime")'
+          - '!contains(body_1, "java.lang.Runtime") && contains(body_2, "java.lang.Runtime")'
 
   # === FREEMARKER ===
-  # FreeMarker built-in: ${expr}
+  # Canary-wrapped expression: xnlbz${267*269}qwfkj
   - raw:
       - |
-        GET /?name=${267*269} HTTP/1.1
+        GET /?name=xnlbz9999999qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
       - |
-        GET /?template=${267*269} HTTP/1.1
+        GET /?name=xnlbz${267*269}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
-    stop-at-first-match: true
+    req-condition: true
     matchers:
       - type: dsl
         name: freemarker-expr-ssti
         dsl:
-          - 'contains(body_1, "71823") && !contains(body_1, "${267")'
-          - 'contains(body_2, "71823") && !contains(body_2, "${267")'
-        condition: or
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
 
-  # FreeMarker string concatenation confirmation
+  - raw:
+      - |
+        GET /?template=xnlbz9999999qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?template=xnlbz${267*269}qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: freemarker-template-param-ssti
+        dsl:
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
+
+  # FreeMarker string concat confirmation
   - raw:
       - |
         GET /?name=${"fr" + "eemarker" + 267?string} HTTP/1.1
@@ -106,15 +137,16 @@ http:
         Accept: text/html
 
     matchers:
-      - type: dsl
+      - type: word
         name: freemarker-string-concat
-        dsl:
-          - 'contains(body, "freemarker267")'
+        words:
+          - "freemarker267"
+        part: body
 
-  # FreeMarker .api access (dangerous built-in for newer versions)
+  # FreeMarker year leak via .now
   - raw:
       - |
-        GET /?name=${.now?string("yyyy")} HTTP/1.1
+        GET /?name=xnlbz${.now?string("yyyy")}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
@@ -122,22 +154,41 @@ http:
       - type: regex
         name: freemarker-builtin-leak
         regex:
-          - '20[2-9][0-9]'
+          - 'xnlbz20[2-9][0-9]qwfkj'
         part: body
 
   # === APACHE VELOCITY ===
-  # Velocity: #set + evaluation
+  # Velocity conditional with unique sentinel
   - raw:
       - |
-        GET /?name=#set($x=267*269)${x} HTTP/1.1
+        GET /?name=#if(267*269==71823)VELOCITY_SSTI_XNLBZ#end HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
     matchers:
+      - type: word
+        name: velocity-conditional
+        words:
+          - "VELOCITY_SSTI_XNLBZ"
+        part: body
+
+  # Velocity #set + evaluation with canary
+  - raw:
+      - |
+        GET /?name=xnlbz9999999qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?name=#set($x=267*269)xnlbz${x}qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    req-condition: true
+    matchers:
       - type: dsl
         name: velocity-set-eval
         dsl:
-          - 'contains(body, "71823") && !contains(body, "#set(")'
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
 
   # Velocity class introspection
   - raw:
@@ -146,43 +197,38 @@ http:
         Host: {{Hostname}}
         Accept: text/html
 
-    matchers:
-      - type: dsl
-        name: velocity-class-introspection
-        dsl:
-          - 'contains(body, "java.lang.Math")'
-
-  # Velocity macro detection
-  - raw:
-      - |
-        GET /?name=#if(267*269==71823)VELOCITY_SSTI_CONFIRMED#end HTTP/1.1
-        Host: {{Hostname}}
-        Accept: text/html
-
+    matchers-condition: and
     matchers:
       - type: word
-        name: velocity-conditional
         words:
-          - "VELOCITY_SSTI_CONFIRMED"
+          - "java.lang.Math"
         part: body
+      - type: dsl
+        dsl:
+          - '!contains(body, "$class.inspect")'
 
   # === PEBBLE ===
   - raw:
       - |
-        GET /?name={{ 267 * 269 }} HTTP/1.1
+        GET /?name=xnlbz9999999qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?name=xnlbz{{ 267 * 269 }}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    req-condition: true
     matchers:
       - type: dsl
         name: pebble-expr-ssti
         dsl:
-          - 'contains(body, "71823") && !contains(body, "{{ 267")'
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
 
   # Pebble string filter confirmation
   - raw:
       - |
-        GET /?name={{ "pebble" | upper }} HTTP/1.1
+        GET /?name={{ "pebblexnlbz" | upper }} HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
@@ -190,7 +236,7 @@ http:
       - type: word
         name: pebble-filter-ssti
         words:
-          - "PEBBLE"
+          - "PEBBLEXNLBZ"
         part: body
 
     extractors:

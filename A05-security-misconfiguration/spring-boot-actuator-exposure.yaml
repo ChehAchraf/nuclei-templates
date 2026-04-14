@@ -5,10 +5,10 @@ info:
   author: achraf-chehboun
   severity: high
   description: |
-    Detects exposed Spring Boot Actuator endpoints across multiple versions (1.x and 2.x+).
-    Actuator endpoints can leak environment variables, database credentials, heap dumps,
-    thread states, and full application configuration. This template checks both default
-    and non-default base paths including custom context paths commonly seen in production.
+    Detects exposed Spring Boot Actuator endpoints (1.x and 2.x+). Actuator endpoints
+    leak environment variables, database credentials, heap dumps, and application config.
+    Each matcher requires actuator-specific JSON structure — not just status 200. This
+    eliminates false positives from catch-all routes and generic error pages.
   reference:
     - https://docs.spring.io/spring-boot/docs/current/reference/html/actuator.html
     - https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
@@ -18,73 +18,39 @@ info:
     cwe-id: CWE-16
     cpe: cpe:2.3:a:pivotal_software:spring_boot:*:*:*:*:*:*:*:*
   metadata:
-    max-request: 24
+    max-request: 20
     shodan-query: http.favicon.hash:116323821
     fofa-query: app="Spring-Boot"
   tags: owasp-top10,misconfig,spring,spring-boot,actuator,exposure
 
 http:
+  # Actuator index (JSON with _links)
   - method: GET
     path:
       - "{{BaseURL}}/actuator"
-      - "{{BaseURL}}/actuator/env"
-      - "{{BaseURL}}/actuator/configprops"
-      - "{{BaseURL}}/actuator/mappings"
-      - "{{BaseURL}}/actuator/beans"
-      - "{{BaseURL}}/actuator/heapdump"
-      - "{{BaseURL}}/actuator/threaddump"
-      - "{{BaseURL}}/actuator/loggers"
-      - "{{BaseURL}}/actuator/metrics"
-      - "{{BaseURL}}/actuator/scheduledtasks"
-      - "{{BaseURL}}/actuator/httptrace"
-      - "{{BaseURL}}/actuator/caches"
-      # Spring Boot 1.x legacy paths
-      - "{{BaseURL}}/env"
-      - "{{BaseURL}}/configprops"
-      - "{{BaseURL}}/mappings"
-      - "{{BaseURL}}/beans"
-      - "{{BaseURL}}/dump"
-      - "{{BaseURL}}/trace"
-      # Common custom context paths
       - "{{BaseURL}}/manage/actuator"
-      - "{{BaseURL}}/management/actuator/env"
-      - "{{BaseURL}}/api/actuator"
-      - "{{BaseURL}}/admin/actuator"
-      - "{{BaseURL}}/system/actuator/env"
-      - "{{BaseURL}}/internal/actuator"
+      - "{{BaseURL}}/management/actuator"
 
     stop-at-first-match: false
-    matchers-condition: or
     matchers:
       - type: dsl
         name: actuator-index
         dsl:
-          - 'status_code == 200 && contains(body, "_links") && contains(body, "actuator")'
+          - 'status_code == 200 && contains(content_type, "json") && contains(body, "\"_links\"") && contains(body, "\"self\"")'
 
+  # /env with strict content matching
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/env"
+      - "{{BaseURL}}/env"
+      - "{{BaseURL}}/..;/actuator/env"
+
+    stop-at-first-match: false
+    matchers:
       - type: dsl
         name: env-exposure
         dsl:
-          - 'status_code == 200 && (contains(body, "propertySources") || contains(body, "systemProperties") || contains(body, "spring.datasource"))'
-
-      - type: dsl
-        name: configprops-exposure
-        dsl:
-          - 'status_code == 200 && (contains(body, "contexts") || contains(body, "beans")) && contains(content_type, "json")'
-
-      - type: dsl
-        name: mappings-exposure
-        dsl:
-          - 'status_code == 200 && contains(body, "dispatcherServlets") && contains(content_type, "json")'
-
-      - type: dsl
-        name: heapdump-exposure
-        dsl:
-          - 'status_code == 200 && contains(content_type, "octet-stream")'
-
-      - type: dsl
-        name: httptrace-exposure
-        dsl:
-          - 'status_code == 200 && contains(body, "traces") && contains(body, "timestamp") && contains(body, "request")'
+          - 'status_code == 200 && contains(content_type, "json") && contains(body, "\"propertySources\"") && (contains(body, "systemProperties") || contains(body, "spring.datasource") || contains(body, "applicationConfig"))'
 
     extractors:
       - type: regex
@@ -92,12 +58,97 @@ http:
         group: 1
         regex:
           - '"spring\.datasource\.url"\s*:\s*\{\s*"value"\s*:\s*"([^"]+)"'
-          - '"jdbc[^"]*"'
-      - type: regex
-        name: credential-keys
-        group: 0
-        regex:
-          - '"[^"]*(?:password|secret|key|token|credential)[^"]*"\s*:\s*\{[^}]*"value"'
+
+  # /configprops (requires Spring-specific JSON structure)
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/configprops"
+      - "{{BaseURL}}/configprops"
+
+    stop-at-first-match: false
+    matchers:
+      - type: dsl
+        name: configprops-exposure
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && (contains(body, "\"contexts\"") || contains(body, "\"beans\"")) && (contains(body, "\"prefix\"") || contains(body, "\"properties\""))'
+
+  # /mappings (Spring MVC handler mappings)
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/mappings"
+      - "{{BaseURL}}/mappings"
+
+    stop-at-first-match: false
+    matchers:
+      - type: dsl
+        name: mappings-exposure
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && (contains(body, "dispatcherServlets") || contains(body, "\"handler\"") || contains(body, "\"predicate\""))'
+
+  # /heapdump (binary, requires large size)
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/heapdump"
+      - "{{BaseURL}}/heapdump"
+
+    stop-at-first-match: true
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: heapdump-exposure
+        dsl:
+          - '(contains(content_type, "octet-stream") || contains(content_type, "x-heap")) && len(body) > 50000'
+
+  # /httptrace (request/response history)
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/httptrace"
+      - "{{BaseURL}}/trace"
+
+    stop-at-first-match: false
+    matchers:
+      - type: dsl
+        name: httptrace-exposure
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && contains(body, "\"traces\"") && contains(body, "\"timestamp\"") && contains(body, "\"request\"")'
+
+  # /beans, /threaddump, /loggers, /metrics, /scheduledtasks
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/beans"
+      - "{{BaseURL}}/actuator/threaddump"
+      - "{{BaseURL}}/actuator/loggers"
+      - "{{BaseURL}}/actuator/metrics"
+      - "{{BaseURL}}/actuator/scheduledtasks"
+
+    stop-at-first-match: false
+    matchers-condition: or
+    matchers:
+      - type: dsl
+        name: beans-exposure
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && contains(body, "\"beans\"") && (contains(body, "\"scope\"") || contains(body, "\"type\"") || contains(body, "\"dependencies\""))'
+
+      - type: dsl
+        name: threaddump-exposure
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && contains(body, "\"threads\"") && contains(body, "\"threadState\"")'
+
+      - type: dsl
+        name: loggers-exposure
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && contains(body, "\"loggers\"") && (contains(body, "\"configuredLevel\"") || contains(body, "\"effectiveLevel\""))'
+
+      - type: dsl
+        name: metrics-exposure
+        dsl:
+          - 'status_code == 200 && contains(content_type, "json") && contains(body, "\"names\"") && (contains(body, "jvm.memory") || contains(body, "http.server") || contains(body, "system.cpu"))'
+
+    extractors:
       - type: kval
         name: spring-version
         kval:

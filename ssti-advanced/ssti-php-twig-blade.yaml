@@ -6,9 +6,9 @@ info:
   severity: critical
   description: |
     Specialized detection for Server-Side Template Injection in PHP frameworks.
-    Targets Twig (Symfony default), Blade (Laravel), and Smarty. Uses engine-specific
-    expression syntax and filter chains to differentiate engines. Exploits arithmetic
-    operations and string manipulation only — no file access or code execution.
+    Targets Twig (Symfony default), Blade (Laravel), and Smarty. Uses canary-wrapped
+    payloads and engine-specific filter chains to confirm evaluation. Canary approach
+    eliminates false positives from pages naturally containing common numbers.
   reference:
     - https://portswigger.net/research/server-side-template-injection
   classification:
@@ -16,47 +16,54 @@ info:
     cvss-score: 9.8
     cwe-id: CWE-1336
   metadata:
-    max-request: 12
+    max-request: 14
   tags: ssti,twig,blade,smarty,php,symfony,laravel,detection-only
 
 http:
   # === TWIG (Symfony) ===
-  # Twig: {{expr}} with multiplication
+  # Canary-wrapped arithmetic
   - raw:
       - |
-        GET /?name={{267*269}} HTTP/1.1
+        GET /?name=xnlbz9999999qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?name=xnlbz{{267*269}}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    req-condition: true
     matchers:
       - type: dsl
         name: twig-basic-eval
         dsl:
-          - 'contains(body, "71823") && !contains(body, "{{267")'
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
 
-  # Twig: string repetition differentiator — {{7*'7'}} = 49 in Twig (arithmetic)
+  # Twig vs Jinja2 differentiator — {{7*'7'}} = 49 in Twig, 7777777 in Jinja2
   - raw:
       - |
-        GET /?name={{7*'7'}} HTTP/1.1
+        GET /?name=xnlbz{{7*'7'}}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
     matchers-condition: or
     matchers:
-      - type: dsl
+      - type: word
         name: twig-confirmed-arithmetic
-        dsl:
-          - 'contains(body, "49") && !contains(body, "7777777")'
+        words:
+          - "xnlbz49qwfkj"
+        part: body
 
-      - type: dsl
+      - type: word
         name: jinja2-confirmed-string-repeat
-        dsl:
-          - 'contains(body, "7777777")'
+        words:
+          - "xnlbz7777777qwfkj"
+        part: body
 
-  # Twig filter chain confirmation
+  # Twig filter chain confirmation — unique string transformation
   - raw:
       - |
-        GET /?name={{'TWIG_SSTI'|lower}} HTTP/1.1
+        GET /?name={{'TWIG_SSTI_XNLBZ'|lower}} HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
@@ -64,7 +71,7 @@ http:
       - type: word
         name: twig-filter-chain
         words:
-          - "twig_ssti"
+          - "twig_ssti_xnlbz"
         part: body
 
   # Twig: _self reference (leaks template metadata)
@@ -95,7 +102,7 @@ http:
           - 'contains(body, "Symfony\\") || contains(body, "kernel.debug") || contains(body, "APP_ENV")'
 
   # === LARAVEL BLADE ===
-  # Blade: {{ expr }} — same as Twig syntax but different engine context
+  # Blade via POST with canary
   - raw:
       - |
         POST /search HTTP/1.1
@@ -103,58 +110,72 @@ http:
         Content-Type: application/x-www-form-urlencoded
         Accept: text/html
 
-        q={{267*269}}
+        q=xnlbz9999999qwfkj
       - |
         POST /search HTTP/1.1
         Host: {{Hostname}}
         Content-Type: application/x-www-form-urlencoded
         Accept: text/html
 
-        q=@php echo 267*269; @endphp
+        q=xnlbz{{267*269}}qwfkj
 
-    stop-at-first-match: true
-    matchers-condition: or
+    req-condition: true
     matchers:
       - type: dsl
         name: blade-double-brace-eval
         dsl:
-          - 'contains(body_1, "71823")'
-      - type: dsl
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
+
+  # Blade: @php directive
+  - raw:
+      - |
+        POST /search HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/x-www-form-urlencoded
+        Accept: text/html
+
+        q=@php echo 'BLADE_SSTI_XNLBZ'; @endphp
+
+    matchers:
+      - type: word
         name: blade-php-directive-eval
-        dsl:
-          - 'contains(body_2, "71823")'
+        words:
+          - "BLADE_SSTI_XNLBZ"
+        part: body
 
   # Blade: {!! unescaped output !!}
   - raw:
       - |
-        GET /?name={!!267*269!!} HTTP/1.1
+        GET /?name=xnlbz{!!267*269!!}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
     matchers:
-      - type: dsl
+      - type: word
         name: blade-unescaped-eval
-        dsl:
-          - 'contains(body, "71823") && !contains(body, "{!!")'
+        words:
+          - "xnlbz71823qwfkj"
+        part: body
 
   # === SMARTY ===
-  # Smarty: {expr}
+  # Smarty: canary-wrapped {expr}
   - raw:
       - |
-        GET /?name={267*269} HTTP/1.1
+        GET /?name=xnlbz{267*269}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
     matchers:
-      - type: dsl
+      - type: word
         name: smarty-basic-eval
-        dsl:
-          - 'contains(body, "71823") && !contains(body, "{267*269}")'
+        words:
+          - "xnlbz71823qwfkj"
+        part: body
 
-  # Smarty: {if} conditional
+  # Smarty: {if} conditional with unique sentinel
   - raw:
       - |
-        GET /?name={if 267*269==71823}SMARTY_SSTI_CONFIRMED{/if} HTTP/1.1
+        GET /?name={if 267*269==71823}SMARTY_SSTI_XNLBZ{/if} HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
@@ -162,22 +183,26 @@ http:
       - type: word
         name: smarty-conditional-eval
         words:
-          - "SMARTY_SSTI_CONFIRMED"
+          - "SMARTY_SSTI_XNLBZ"
         part: body
 
-  # Smarty: {$smarty.version} variable leak
+  # Smarty: version leak
   - raw:
       - |
         GET /?name={$smarty.version} HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    matchers-condition: and
     matchers:
       - type: regex
         name: smarty-version-leak
         regex:
           - '[2-4]\.[0-9]+\.[0-9]+'
         part: body
+      - type: dsl
+        dsl:
+          - '!contains(body, "{$smarty.version}")'
 
     extractors:
       - type: regex

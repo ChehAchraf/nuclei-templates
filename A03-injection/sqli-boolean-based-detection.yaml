@@ -5,10 +5,11 @@ info:
   author: achraf-chehboun
   severity: critical
   description: |
-    Detects boolean-based blind SQL injection by comparing application responses
-    between always-true and always-false conditions. Uses response length differential
-    and content comparison to identify injectable parameters. Fully non-destructive —
-    only uses conditional SELECT logic.
+    Detects boolean-based blind SQL injection using three-request differential analysis.
+    Each test sends a normal request, a true-condition request, and a false-condition
+    request. Confirms injection only when true matches normal but false differs — this
+    eliminates false positives from catch-all routes that return identical responses
+    for any input.
   reference:
     - https://owasp.org/Top10/A03_2021-Injection/
   classification:
@@ -16,12 +17,15 @@ info:
     cvss-score: 9.8
     cwe-id: CWE-89
   metadata:
-    max-request: 12
+    max-request: 15
   tags: owasp-top10,sqli,injection,boolean-based,blind,detection-only
 
 http:
-  # Test 1: Numeric parameter — true vs false condition
+  # Numeric parameter — normal vs true vs false
   - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
       - |
         GET /?id=1%20AND%201=1 HTTP/1.1
         Host: {{Hostname}}
@@ -34,12 +38,15 @@ http:
       - type: dsl
         name: numeric-boolean-differential
         dsl:
-          - 'status_code_1 == 200 && status_code_2 != status_code_1'
-          - 'status_code_1 == 200 && status_code_2 == 200 && (len(body_1) != len(body_2)) && (len(body_1) - len(body_2) > 50 || len(body_2) - len(body_1) > 50)'
+          - 'status_code_1 == 200 && status_code_2 == 200 && status_code_3 != 200'
+          - 'status_code_1 == 200 && status_code_2 == 200 && status_code_3 == 200 && len(body_2) == len(body_1) && len(body_3) != len(body_1) && (len(body_1) - len(body_3) > 100 || len(body_3) - len(body_1) > 100)'
         condition: or
 
-  # Test 2: String parameter — single-quote true vs false
+  # String parameter — single-quote boundary
   - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
       - |
         GET /?id=1'%20AND%20'1'='1 HTTP/1.1
         Host: {{Hostname}}
@@ -52,29 +59,11 @@ http:
       - type: dsl
         name: string-boolean-differential
         dsl:
-          - 'status_code_1 == 200 && status_code_2 != status_code_1'
-          - 'status_code_1 == 200 && status_code_2 == 200 && (len(body_1) != len(body_2)) && (len(body_1) - len(body_2) > 50 || len(body_2) - len(body_1) > 50)'
+          - 'status_code_1 == 200 && status_code_2 == 200 && status_code_3 != 200'
+          - 'status_code_1 == 200 && status_code_2 == 200 && status_code_3 == 200 && len(body_2) == len(body_1) && len(body_3) != len(body_1) && (len(body_1) - len(body_3) > 100 || len(body_3) - len(body_1) > 100)'
         condition: or
 
-  # Test 3: Parenthesis-wrapped conditions (common in WHERE clauses)
-  - raw:
-      - |
-        GET /?id=1')%20AND%20('1'='1 HTTP/1.1
-        Host: {{Hostname}}
-      - |
-        GET /?id=1')%20AND%20('1'='2 HTTP/1.1
-        Host: {{Hostname}}
-
-    req-condition: true
-    matchers:
-      - type: dsl
-        name: paren-boolean-differential
-        dsl:
-          - 'status_code_1 == 200 && status_code_2 != status_code_1'
-          - 'status_code_1 == 200 && status_code_2 == 200 && (len(body_1) != len(body_2)) && (len(body_1) - len(body_2) > 50 || len(body_2) - len(body_1) > 50)'
-        condition: or
-
-  # Test 4: Mathematical proof — id=2-1 should equal id=1
+  # Arithmetic proof — id=2-1 should equal id=1 BUT id=0 should differ
   - raw:
       - |
         GET /?id=1 HTTP/1.1
@@ -82,16 +71,22 @@ http:
       - |
         GET /?id=2-1 HTTP/1.1
         Host: {{Hostname}}
+      - |
+        GET /?id=0 HTTP/1.1
+        Host: {{Hostname}}
 
     req-condition: true
     matchers:
       - type: dsl
         name: arithmetic-injection-proof
         dsl:
-          - 'status_code_1 == 200 && status_code_2 == 200 && len(body_1) == len(body_2) && body_1 == body_2'
+          - 'status_code_1 == 200 && body_1 == body_2 && body_1 != body_3 && len(body_1) > 50'
 
-  # Test 5: CASE expression based (database-agnostic)
+  # CASE expression based (database-agnostic)
   - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
       - |
         GET /?id=(CASE%20WHEN%201=1%20THEN%201%20ELSE%200%20END) HTTP/1.1
         Host: {{Hostname}}
@@ -104,10 +99,13 @@ http:
       - type: dsl
         name: case-expression-differential
         dsl:
-          - 'status_code_1 == 200 && (status_code_2 != status_code_1 || (len(body_1) != len(body_2) && (len(body_1) - len(body_2) > 50 || len(body_2) - len(body_1) > 50)))'
+          - 'status_code_1 == 200 && body_1 == body_2 && body_1 != body_3 && len(body_1) > 50'
 
-  # Test 6: ORDER BY column enumeration (safe fingerprinting)
+  # ORDER BY column enumeration — ORDER BY 1 works, ORDER BY 999999 errors
   - raw:
+      - |
+        GET /?id=1 HTTP/1.1
+        Host: {{Hostname}}
       - |
         GET /?id=1%20ORDER%20BY%201 HTTP/1.1
         Host: {{Hostname}}
@@ -120,6 +118,6 @@ http:
       - type: dsl
         name: order-by-enumeration
         dsl:
-          - 'status_code_1 == 200 && status_code_2 != 200'
-          - 'status_code_1 == 200 && status_code_2 == 200 && len(body_1) != len(body_2)'
+          - 'status_code_1 == 200 && status_code_2 == 200 && status_code_3 != 200'
+          - 'status_code_1 == 200 && status_code_2 == 200 && status_code_3 == 200 && body_1 == body_2 && body_1 != body_3'
         condition: or

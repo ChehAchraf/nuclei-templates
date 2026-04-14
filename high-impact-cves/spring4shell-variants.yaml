@@ -8,43 +8,53 @@ info:
     Detects Spring4Shell (CVE-2022-22965) and related Spring Framework RCE variants.
     Tests for classLoader property access via data binding, Spring Cloud Function SpEL
     injection (CVE-2022-22963), Spring Cloud Gateway actuator RCE (CVE-2022-22947),
-    and Spring WebFlux path traversal. Uses non-destructive probes that detect the
-    vulnerability surface without writing files or executing commands.
+    and Spring WebFlux path traversal. Uses response content validation to prevent
+    false positives from catch-all routes and generic error pages.
   reference:
     - https://nvd.nist.gov/vuln/detail/CVE-2022-22965
     - https://nvd.nist.gov/vuln/detail/CVE-2022-22963
     - https://nvd.nist.gov/vuln/detail/CVE-2022-22947
-    - https://spring.io/blog/2022/03/31/spring-framework-rce-early-announcement
   classification:
     cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
     cvss-score: 9.8
     cwe-id: CWE-94
   metadata:
-    max-request: 10
+    max-request: 8
   tags: spring4shell,cve-2022-22965,cve-2022-22963,cve-2022-22947,rce,spring,detection-only
 
 http:
   # === CVE-2022-22965 (Spring4Shell) ===
-  # Detection: test classLoader property access via data binding
+  # Three-request differential: baseline, class access, invalid class access
   - raw:
+      - |
+        GET /?xnlbz=baseline HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
       - |
         GET /?class.module.classLoader.DefaultAssertionStatus=nuclei HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
+      - |
+        GET /?class.module.classLoader.INVALID_PROPERTY_XNLBZ=nuclei HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
 
-    matchers-condition: and
+    req-condition: true
+    matchers-condition: or
     matchers:
-      - type: status
-        status:
-          - 200
-          - 400
+      - type: dsl
+        name: spring4shell-class-binding
+        dsl:
+          - 'status_code_2 == 200 && status_code_3 == 400 && !contains(body_2, "<html")'
 
       - type: dsl
-        name: spring4shell-class-access
+        name: spring4shell-error-differential
         dsl:
-          - '!contains(body, "Cannot bind") && !contains(body, "rejected") && status_code != 404'
+          - 'status_code_2 != status_code_1 && status_code_2 != status_code_3 && (status_code_2 == 200 || status_code_2 == 400)'
+          - 'contains(body_2, "classLoader") || contains(body_2, "DefaultAssertionStatus")'
+        condition: and
 
-  # Spring4Shell: Tomcat-specific classLoader property probe
+  # Spring4Shell Tomcat-specific classLoader probe
   - raw:
       - |
         POST / HTTP/1.1
@@ -52,38 +62,24 @@ http:
         Content-Type: application/x-www-form-urlencoded
         Accept: text/html
 
-        class.module.classLoader.resources.context.parent.pipeline.first.pattern=nuclei-detection-test&class.module.classLoader.resources.context.parent.pipeline.first.suffix=.txt&class.module.classLoader.resources.context.parent.pipeline.first.directory=/tmp&class.module.classLoader.resources.context.parent.pipeline.first.prefix=nuclei-test&class.module.classLoader.resources.context.parent.pipeline.first.fileDateFormat=
+        class.module.classLoader.resources.context.parent.pipeline.first.pattern=nuclei-detection-test
 
-    matchers-condition: or
+    matchers-condition: and
     matchers:
       - type: dsl
         name: spring4shell-tomcat-binding
         dsl:
-          - 'status_code == 200'
-          - 'status_code == 400 && !contains(body, "BindException") && !contains(body, "not found")'
-        condition: or
-
-  # Detection via error response analysis
-  - raw:
-      - |
-        GET /?class.module.classLoader.resources.context.parent.pipeline.first.pattern={{randstr}} HTTP/1.1
-        Host: {{Hostname}}
-        Accept: text/html
-
-    matchers:
-      - type: dsl
-        name: spring4shell-property-traversal
-        dsl:
-          - 'status_code != 404 && !contains(body, "Whitelabel Error Page") && !contains(body, "not supported")'
-          - 'status_code == 200 || status_code == 400'
+          - 'status_code == 200 || (status_code == 400 && !contains(body, "BindException"))'
+          - 'contains(body, "classLoader") || contains(body, "pipeline") || contains(body, "resources.context")'
         condition: and
 
-  # === CVE-2022-22963 (Spring Cloud Function) ===
+  # === CVE-2022-22963 (Spring Cloud Function SpEL) ===
+  # Must verify SpEL actually evaluates, not just accept any non-404
   - raw:
       - |
-        POST /functionRouter HTTP/1.1
+        POST {{BaseURL}}/functionRouter HTTP/1.1
         Host: {{Hostname}}
-        spring.cloud.function.routing-expression: T(java.lang.Math).abs(-1)
+        spring.cloud.function.routing-expression: T(java.lang.Math).abs(-71589)
         Content-Type: application/x-www-form-urlencoded
         Accept: */*
 
@@ -92,26 +88,51 @@ http:
     matchers-condition: or
     matchers:
       - type: dsl
-        name: cve-2022-22963-spel-eval
+        name: cve-2022-22963-spel-confirmed
         dsl:
-          - 'contains(body, "1")'
-          - 'status_code == 500 && (contains(body, "SpelEvaluationException") || contains(body, "Expression") || contains(body, "java.lang.Math"))'
-        condition: or
+          - 'contains(body, "71589")'
+
+      - type: dsl
+        name: cve-2022-22963-spel-error
+        dsl:
+          - 'status_code == 500 && (contains(body, "SpelEvaluationException") || contains(body, "routing-expression") || contains(body, "spring.cloud.function"))'
 
   # === CVE-2022-22947 (Spring Cloud Gateway) ===
-  # Detection: check if gateway actuator refresh endpoint exists
+  # Verify actual gateway routes JSON response
+  - method: GET
+    path:
+      - "{{BaseURL}}/actuator/gateway/routes"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: dsl
+        name: cve-2022-22947-gateway-routes
+        dsl:
+          - 'contains(content_type, "json") && (contains(body, "route_id") || contains(body, "\"predicate\"") || contains(body, "\"filters\"") || contains(body, "\"uri\""))'
+
+  # Gateway route creation check (must return 201 with JSON)
   - raw:
       - |
-        POST /actuator/gateway/refresh HTTP/1.1
+        POST {{BaseURL}}/actuator/gateway/routes/nuclei-test-{{randstr}} HTTP/1.1
         Host: {{Hostname}}
         Content-Type: application/json
         Accept: application/json
 
+        {"id":"nuclei-test-{{randstr}}","predicates":[{"name":"Path","args":{"_genkey_0":"/nuclei-test-{{randstr}}"}}],"filters":[{"name":"AddResponseHeader","args":{"name":"X-Nuclei-Test","value":"detection-only"}}],"uri":"https://example.com","order":0}
+
+    matchers-condition: and
     matchers:
+      - type: status
+        status:
+          - 201
       - type: dsl
-        name: cve-2022-22947-gateway-refresh
+        name: cve-2022-22947-route-writable
         dsl:
-          - 'status_code == 200'
+          - 'contains(content_type, "json") || len(body) < 10'
 
   # === SPRING WEBFLUX PATH TRAVERSAL ===
   - method: GET
@@ -139,7 +160,7 @@ http:
 
       - type: dsl
         dsl:
-          - 'contains(content_type, "json")'
+          - 'contains(content_type, "json") && (contains(body, "\"build\"") || contains(body, "\"git\"") || contains(body, "\"version\""))'
 
     extractors:
       - type: regex

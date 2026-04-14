@@ -6,10 +6,10 @@ info:
   severity: critical
   description: |
     Detects Server-Side Template Injection (SSTI) across multiple template engines
-    including Jinja2 (Python/Flask), Twig (PHP/Symfony), Freemarker (Java), Thymeleaf
-    (Java/Spring), Pebble (Java), Mako (Python), ERB (Ruby), Handlebars (Node.js),
-    and Pug/Jade (Node.js). Uses mathematical expression evaluation as a safe, non-destructive
-    confirmation technique — no command execution or file access is attempted.
+    using canary-wrapped arithmetic payloads that produce globally unique result strings.
+    Uses two-request differential (baseline vs probe) to eliminate false positives from
+    pages that naturally contain common numbers. The canary pattern "xnlbz71823qwfkj"
+    will never appear in legitimate HTML/JSON content.
   reference:
     - https://owasp.org/Top10/A03_2021-Injection/
     - https://portswigger.net/web-security/server-side-template-injection
@@ -18,150 +18,179 @@ info:
     cvss-score: 9.8
     cwe-id: CWE-1336
   metadata:
-    max-request: 10
+    max-request: 18
   tags: owasp-top10,injection,ssti,template-injection,detection-only
 
-variables:
-  result_49: "49"
-  result_7777777: "7777777"
-  result_777777: "777777"
-
 http:
-  # Test 1: Jinja2/Twig — {{7*7}} should render as 49
+  # Jinja2/Twig — {{267*269}} should render as 71823 sandwiched between canaries
   - raw:
       - |
-        GET /?name={{7*7}} HTTP/1.1
+        GET /?name=xnlbz9999999qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
       - |
-        GET /?q={{7*7}} HTTP/1.1
-        Host: {{Hostname}}
-        Accept: text/html
-      - |
-        GET /?template={{7*7}} HTTP/1.1
+        GET /?name=xnlbz{{267*269}}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
-    stop-at-first-match: true
-    matchers-condition: or
+    req-condition: true
     matchers:
       - type: dsl
-        name: jinja2-twig-confirmed
+        name: jinja2-twig-param-name
         dsl:
-          - 'contains(body_1, "49") && !contains(body_1, "{{7*7}}")'
-          - 'contains(body_2, "49") && !contains(body_2, "{{7*7}}")'
-          - 'contains(body_3, "49") && !contains(body_3, "{{7*7}}")'
-        condition: or
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
+        condition: and
 
-  # Test 2: Jinja2 specific — {{7*'7'}} renders as 7777777 in Jinja2 but 49 in Twig
   - raw:
       - |
-        GET /?name={{7*'7'}} HTTP/1.1
+        GET /?q=xnlbz9999999qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?q=xnlbz{{267*269}}qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: jinja2-twig-param-q
+        dsl:
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
+
+  - raw:
+      - |
+        GET /?template=xnlbz9999999qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?template=xnlbz{{267*269}}qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+
+    req-condition: true
+    matchers:
+      - type: dsl
+        name: jinja2-twig-param-template
+        dsl:
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
+
+  # Jinja2 string multiplication differentiator — {{7*'7'}} = "7777777" in Jinja2
+  - raw:
+      - |
+        GET /?name=xnlbz{{7*'7'}}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
     matchers-condition: or
     matchers:
-      - type: dsl
+      - type: word
         name: jinja2-string-multiply
-        dsl:
-          - 'contains(body, "7777777")'
+        words:
+          - "xnlbz7777777qwfkj"
+        part: body
 
-      - type: dsl
+      - type: word
         name: twig-arithmetic
-        dsl:
-          - 'contains(body, "49") && !contains(body, "7777777")'
+        words:
+          - "xnlbz49qwfkj"
+        part: body
 
-  # Test 3: Freemarker (Java) — ${7*7}
+  # FreeMarker (Java) — ${267*269}
   - raw:
       - |
-        GET /?name=${7*7} HTTP/1.1
+        GET /?name=xnlbz9999999qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?name=xnlbz${267*269}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    req-condition: true
     matchers:
       - type: dsl
         name: freemarker-confirmed
         dsl:
-          - 'contains(body, "49") && !contains(body, "${7*7}")'
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
 
-  # Test 4: Thymeleaf (Spring) — expression evaluation
+  # Thymeleaf (Spring) — preprocessor expression __${expr}__
   - raw:
       - |
-        GET /?name=__${7*7}__::x HTTP/1.1
+        GET /?name=nonexistent_baseline_xnlbz HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?name=__${267*269}__::x HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    req-condition: true
     matchers:
       - type: dsl
         name: thymeleaf-confirmed
         dsl:
-          - 'contains(body, "49")'
+          - '!contains(body_1, "71823") && contains(body_2, "71823") && !contains(body_2, "__${267")'
 
-  # Test 5: ERB (Ruby) — <%= 7*7 %>
+  # ERB (Ruby) — <%%= 267*269 %>
   - raw:
       - |
-        GET /?name=<%25%3d+7*7+%25> HTTP/1.1
+        GET /?name=xnlbz9999999qwfkj HTTP/1.1
+        Host: {{Hostname}}
+        Accept: text/html
+      - |
+        GET /?name=xnlbz<%25%3d+267*269+%25>qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
+    req-condition: true
     matchers:
       - type: dsl
         name: erb-confirmed
         dsl:
-          - 'contains(body, "49") && !contains(body, "<%")'
+          - '!contains(body_1, "xnlbz71823qwfkj") && contains(body_2, "xnlbz71823qwfkj")'
 
-  # Test 6: Pug/Jade (Node.js) — #{7*7}
+  # Pug/Jade (Node.js) — #{267*269}
   - raw:
       - |
-        GET /?name=#{7*7} HTTP/1.1
+        GET /?name=xnlbz#{267*269}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
     matchers:
-      - type: dsl
+      - type: word
         name: pug-jade-confirmed
-        dsl:
-          - 'contains(body, "49") && !contains(body, "#{7*7}")'
+        words:
+          - "xnlbz71823qwfkj"
+        part: body
 
-  # Test 7: Mako (Python) — ${7*7}
+  # Smarty (PHP) — {267*269}
   - raw:
       - |
-        GET /?name=${7*7} HTTP/1.1
+        GET /?name=xnlbz{267*269}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
     matchers:
-      - type: dsl
-        name: mako-confirmed
-        dsl:
-          - 'contains(body, "49") && !contains(body, "${7*7}")'
-
-  # Test 8: Smarty (PHP) — {7*7}
-  - raw:
-      - |
-        GET /?name={7*7} HTTP/1.1
-        Host: {{Hostname}}
-        Accept: text/html
-
-    matchers:
-      - type: dsl
+      - type: word
         name: smarty-confirmed
-        dsl:
-          - 'contains(body, "49") && !contains(body, "{7*7}")'
+        words:
+          - "xnlbz71823qwfkj"
+        part: body
 
-  # Test 9: Expression Language (Java EE) — ${7*7}
+  # Expression Language (Java EE) — ${267*269}
   - raw:
       - |
-        GET /?name=%24%7B7*7%7D HTTP/1.1
+        GET /?name=xnlbz%24%7B267*269%7Dqwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
     matchers:
-      - type: dsl
+      - type: word
         name: el-injection-confirmed
-        dsl:
-          - 'contains(body, "49")'
+        words:
+          - "xnlbz71823qwfkj"
+        part: body
 
     extractors:
       - type: regex

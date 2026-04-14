@@ -5,10 +5,11 @@ info:
   author: achraf-chehboun
   severity: high
   description: |
-    Detects JWT (JSON Web Token) misconfigurations including acceptance of the "none"
-    algorithm, missing signature verification, weak HMAC secrets, algorithm confusion
-    (RS256 to HS256), expired token acceptance, and JWK/JWKS endpoint exposure.
-    Detection only — analyzes token handling behavior without exploitation.
+    Detects JWT misconfigurations including "none" algorithm acceptance, missing
+    signature verification, and JWK/JWKS endpoint exposure. Uses a two-phase
+    approach: first verifies the endpoint rejects invalid tokens (401/403), then
+    tests if none-alg tokens are accepted. Requires JSON content-type to eliminate
+    false positives from HTML catch-all pages.
   reference:
     - https://owasp.org/Top10/A01_2021-Broken_Access_Control/
     - https://portswigger.net/web-security/jwt
@@ -17,21 +18,17 @@ info:
     cvss-score: 9.1
     cwe-id: CWE-345
   metadata:
-    max-request: 8
+    max-request: 10
   tags: owasp-top10,broken-access-control,jwt,authentication,detection-only
 
 variables:
-  # JWT with alg:none — header: {"alg":"none","typ":"JWT"}, payload: {"sub":"test","admin":true}
   jwt_none: "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ0ZXN0IiwiYWRtaW4iOnRydWV9."
-  # JWT with alg:None (capitalized variant)
   jwt_None: "eyJhbGciOiJOb25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ0ZXN0IiwiYWRtaW4iOnRydWV9."
-  # JWT with alg:nOnE (mixed case bypass)
   jwt_nOnE: "eyJhbGciOiJuT25FIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ0ZXN0IiwiYWRtaW4iOnRydWV9."
-  # JWT with empty signature
   jwt_empty_sig: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0IiwiYWRtaW4iOnRydWV9."
 
 http:
-  # Test 1: JWKS endpoint exposure
+  # JWKS endpoint exposure
   - method: GET
     path:
       - "{{BaseURL}}/.well-known/jwks.json"
@@ -45,12 +42,12 @@ http:
       - type: dsl
         name: jwks-exposed
         dsl:
-          - 'status_code == 200 && contains(body, "keys") && (contains(body, "kty") || contains(body, "n") || contains(body, "e"))'
+          - 'status_code == 200 && contains(content_type, "json") && contains(body, "\"keys\"") && (contains(body, "\"kty\"") || contains(body, "\"n\""))'
 
       - type: dsl
         name: openid-config-exposed
         dsl:
-          - 'status_code == 200 && contains(body, "jwks_uri") && contains(body, "issuer")'
+          - 'status_code == 200 && contains(content_type, "json") && contains(body, "jwks_uri") && contains(body, "issuer")'
 
     extractors:
       - type: regex
@@ -58,62 +55,55 @@ http:
         group: 1
         regex:
           - '"kty"\s*:\s*"([^"]+)"'
-      - type: regex
-        name: jwks-algorithms
-        group: 1
-        regex:
-          - '"alg"\s*:\s*"([^"]+)"'
 
-  # Test 2: None algorithm acceptance
+  # None algorithm: baseline (invalid token) MUST get 401/403, then none-alg token
   - raw:
       - |
-        GET /api/profile HTTP/1.1
+        GET {{BaseURL}}/api/profile HTTP/1.1
+        Host: {{Hostname}}
+        Authorization: Bearer invalid.token.xnlbz
+        Accept: application/json
+      - |
+        GET {{BaseURL}}/api/profile HTTP/1.1
         Host: {{Hostname}}
         Authorization: Bearer {{jwt_none}}
         Accept: application/json
       - |
-        GET /api/profile HTTP/1.1
+        GET {{BaseURL}}/api/profile HTTP/1.1
         Host: {{Hostname}}
         Authorization: Bearer {{jwt_None}}
         Accept: application/json
-      - |
-        GET /api/profile HTTP/1.1
-        Host: {{Hostname}}
-        Authorization: Bearer {{jwt_nOnE}}
-        Accept: application/json
 
-    stop-at-first-match: true
-    matchers-condition: and
+    req-condition: true
     matchers:
-      - type: status
-        status:
-          - 200
-
       - type: dsl
         name: none-alg-accepted
         dsl:
-          - '!contains(body, "invalid") && !contains(body, "unauthorized") && !contains(body, "error") && !contains(body, "expired")'
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_2 == 200 && contains(content_type_2, "json") && !contains(body_2, "<html")'
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_3 == 200 && contains(content_type_3, "json") && !contains(body_3, "<html")'
+        condition: or
 
-  # Test 3: Empty signature acceptance
+  # Empty signature: baseline must reject, empty sig must succeed
   - raw:
       - |
-        GET /api/profile HTTP/1.1
+        GET {{BaseURL}}/api/profile HTTP/1.1
+        Host: {{Hostname}}
+        Authorization: Bearer invalid.token.xnlbz
+        Accept: application/json
+      - |
+        GET {{BaseURL}}/api/profile HTTP/1.1
         Host: {{Hostname}}
         Authorization: Bearer {{jwt_empty_sig}}
         Accept: application/json
 
-    matchers-condition: and
+    req-condition: true
     matchers:
-      - type: status
-        status:
-          - 200
-
       - type: dsl
         name: empty-sig-accepted
         dsl:
-          - '!contains(body, "invalid") && !contains(body, "unauthorized") && !contains(body, "error")'
+          - '(status_code_1 == 401 || status_code_1 == 403) && status_code_2 == 200 && contains(content_type_2, "json") && !contains(body_2, "<html")'
 
-  # Test 4: JWT in response body (token leakage detection)
+  # JWT leakage in response body
   - method: GET
     path:
       - "{{BaseURL}}"
@@ -123,7 +113,7 @@ http:
       - type: regex
         name: jwt-leakage-in-response
         regex:
-          - 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*'
+          - 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}'
         part: body
 
     extractors:
@@ -131,4 +121,4 @@ http:
         name: leaked-jwt
         group: 0
         regex:
-          - '(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)'
+          - '(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})'
