@@ -186,23 +186,19 @@ http:
           - "SMARTY_SSTI_XNLBZ"
         part: body
 
-  # Smarty: version leak
+  # Smarty: version leak — canary-wrapped to avoid matching page version strings
   - raw:
       - |
-        GET /?name={$smarty.version} HTTP/1.1
+        GET /?name=xnlbz{$smarty.version}qwfkj HTTP/1.1
         Host: {{Hostname}}
         Accept: text/html
 
-    matchers-condition: and
     matchers:
       - type: regex
         name: smarty-version-leak
         regex:
-          - '[2-4]\.[0-9]+\.[0-9]+'
+          - 'xnlbz[2-5]\.[0-9]+\.[0-9]+qwfkj'
         part: body
-      - type: dsl
-        dsl:
-          - '!contains(body, "{$smarty.version}")'
 
     extractors:
       - type: regex
